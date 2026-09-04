@@ -1,0 +1,8 @@
+# The Dockerfile builds a toolchain image and COPYs nothing from the repo, so
+# keeping these out just avoids shipping a large build context to the daemon.
+.git
+dist
+server/dist
+webapp/dist
+webapp/node_modules
+build/bin
