@@ -1,15 +1,15 @@
 # Mattermost WebRTC video/audio call plugin
 
-[![CI](https://github.com/niklabh/mattermost-plugin-webrtc-video/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/niklabh/mattermost-plugin-webrtc-video/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/niklabh/mattermost-plugin-webrtc-video)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/niklabh/mattermost-plugin-webrtc-video?include_prereleases&label=release)](https://github.com/niklabh/mattermost-plugin-webrtc-video/releases)
+[![CI](https://github.com/lenerson/mattermost-plugin-voices/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/lenerson/mattermost-plugin-voices/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/lenerson/mattermost-plugin-voices)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/lenerson/mattermost-plugin-voices?include_prereleases&label=release)](https://github.com/lenerson/mattermost-plugin-voices/releases)
 [![Mattermost](https://img.shields.io/badge/Mattermost-10%2B-blue)](https://mattermost.com)
 
 Peer-to-peer **video calls** in direct messages and **voice channels** in the left sidebar — powered by browser WebRTC and a plugin-hosted signalling layer (HTTP + Server-Sent Events). No external Signalhub or third-party broker required.
 
 Targets **Mattermost 10+** (`min_server_version` in [`plugin.json`](plugin.json)). The Go server uses [`github.com/mattermost/mattermost/server/public`](https://pkg.go.dev/github.com/mattermost/mattermost/server/public).
 
-![WebRTC plugin screenshot](https://github.com/niklabh/mattermost-plugin-webrtc-video/raw/master/assets/screen.jpg)
+![WebRTC plugin screenshot](https://github.com/lenerson/mattermost-plugin-voices/raw/main/assets/screen.jpg)
 
 ## Features
 
@@ -63,7 +63,7 @@ Supported plugin binaries: **linux/amd64**, **linux/arm64**, **darwin/amd64**, *
 
 ## Installation
 
-1. Build the plugin bundle (see [Build](#build)) or download a release `.tar.gz` from [GitHub Releases](https://github.com/niklabh/mattermost-plugin-webrtc-video/releases).
+1. Build the plugin bundle (see [Build](#build)) or download a release `.tar.gz` from [GitHub Releases](https://github.com/lenerson/mattermost-plugin-voices/releases).
 2. In Mattermost: **System Console → Plugins → Plugin Management → Upload**.
 3. Enable the plugin and grant any requested permissions.
 
@@ -168,7 +168,7 @@ Enable browser devtools and look for `[mattermost-webrtc-video]` debug output (s
 
 ## Contributing
 
-Issues and pull requests are welcome on [GitHub](https://github.com/niklabh/mattermost-plugin-webrtc-video).
+Issues and pull requests are welcome on [GitHub](https://github.com/lenerson/mattermost-plugin-voices).
 
 ## License
 
