@@ -70,6 +70,53 @@ describe('AudioCallPanel room directory', () => {
         }));
         expect(panel.startPresence).toHaveBeenCalledWith('room-1');
     });
+
+    test('shows channel settings on hover and deletes from its popup menu', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.channelList = [{
+            roomId: 'room-1',
+            name: 'Standup',
+            creatorId: 'user-1',
+            participants: [],
+        }];
+        panel.setState = (update) => {
+            const nextState = typeof update === 'function' ? update(panel.state) : update;
+            panel.state = {...panel.state, ...nextState};
+        };
+
+        let rendered = panel.render();
+        expect(findElements(rendered, (element) => element.props && element.props['aria-label'] === 'Voice channel settings for Standup')).toHaveLength(0);
+
+        const roomRow = findElements(rendered, (element) => element.type === 'li' && element.props.onMouseEnter)[0];
+        roomRow.props.onMouseEnter();
+
+        rendered = panel.render();
+        const settingsButton = findElements(rendered, (element) => element.props && element.props['aria-label'] === 'Voice channel settings for Standup')[0];
+        expect(settingsButton).toBeDefined();
+
+        const settingsEvent = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
+        settingsButton.props.onClick(settingsEvent);
+
+        expect(settingsEvent.preventDefault).toHaveBeenCalledTimes(1);
+        expect(settingsEvent.stopPropagation).toHaveBeenCalledTimes(1);
+
+        rendered = panel.render();
+        expect(findElements(rendered, (element) => element.props && element.props.role === 'menu')).toHaveLength(1);
+
+        const deleteHandler = jest.fn();
+        panel.handleDeleteRoom = jest.fn(() => deleteHandler);
+        const deleteItem = findElements(rendered, (element) => element.props && element.props.role === 'menuitem')[0];
+        const deleteEvent = {};
+        deleteItem.props.onClick(deleteEvent);
+
+        expect(panel.handleDeleteRoom).toHaveBeenCalledWith('room-1');
+        expect(deleteHandler).toHaveBeenCalledWith(deleteEvent);
+        expect(panel.state.openRoomMenuId).toBeNull();
+    });
 });
 
 describe('AudioCallPanel leaving a room', () => {

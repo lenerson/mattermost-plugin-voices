@@ -119,6 +119,8 @@ export class AudioCallPanel extends React.Component {
             directoryError: '',
             newChannelNameDraft: '',
             showCreateInput: false,
+            hoveredRoomId: null,
+            openRoomMenuId: null,
         };
 
         this.swarmInstance = null;
@@ -270,6 +272,37 @@ export class AudioCallPanel extends React.Component {
         return Boolean(isSystemAdmin || (room.creatorId && room.creatorId === userId));
     }
 
+    handleRoomRowEnter = (roomId) => () => {
+        this.setState({hoveredRoomId: roomId});
+    };
+
+    handleRoomRowLeave = (roomId) => () => {
+        this.setState((state) => ({
+            hoveredRoomId: state.hoveredRoomId === roomId ? null : state.hoveredRoomId,
+            openRoomMenuId: state.openRoomMenuId === roomId ? null : state.openRoomMenuId,
+        }));
+    };
+
+    handleRoomRowBlur = (roomId) => (e) => {
+        if (e.currentTarget.contains(e.relatedTarget)) {
+            return;
+        }
+        this.handleRoomRowLeave(roomId)();
+    };
+
+    handleToggleRoomMenu = (roomId) => (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.setState((state) => ({
+            openRoomMenuId: state.openRoomMenuId === roomId ? null : roomId,
+        }));
+    };
+
+    handleDeleteRoomFromMenu = (roomId) => (e) => {
+        this.setState({openRoomMenuId: null});
+        this.handleDeleteRoom(roomId)(e);
+    };
+
     handleDeleteRoom = (roomId) => (e) => {
         if (e && e.preventDefault) {
             e.preventDefault();
@@ -412,6 +445,8 @@ export class AudioCallPanel extends React.Component {
                 audioOn: true,
                 audioEnabled: true,
                 videoEnabled: false,
+                hoveredRoomId: null,
+                openRoomMenuId: null,
             });
             this.startPresence(roomId);
         });
@@ -688,6 +723,8 @@ export class AudioCallPanel extends React.Component {
             directoryError,
             showCreateInput,
             newChannelNameDraft,
+            hoveredRoomId,
+            openRoomMenuId,
         } = this.state;
         const style = getStyle();
 
@@ -770,7 +807,11 @@ export class AudioCallPanel extends React.Component {
                             {channelList.map((r) => (
                                 <li
                                     key={r.roomId}
-                                    style={style.roomRow}
+                                    style={openRoomMenuId === r.roomId ? {...style.roomRow, ...style.roomRowMenuOpen} : style.roomRow}
+                                    onMouseEnter={this.handleRoomRowEnter(r.roomId)}
+                                    onMouseLeave={this.handleRoomRowLeave(r.roomId)}
+                                    onFocus={this.handleRoomRowEnter(r.roomId)}
+                                    onBlur={this.handleRoomRowBlur(r.roomId)}
                                 >
                                     <button
                                         type='button'
@@ -789,17 +830,38 @@ export class AudioCallPanel extends React.Component {
                                         </span>
                                         {this.renderOccupants(r)}
                                     </button>
-                                    {this.canDeleteRoom(r) && (
+                                    {this.canDeleteRoom(r) && (hoveredRoomId === r.roomId || openRoomMenuId === r.roomId) && (
                                         <span style={style.roomActions}>
                                             <button
                                                 type='button'
-                                                style={style.deleteBtn}
-                                                title='Delete this voice channel for everyone'
-                                                aria-label={`Delete voice channel ${r.name}`}
-                                                onClick={this.handleDeleteRoom(r.roomId)}
+                                                style={style.roomSettingsBtn}
+                                                title='Voice channel settings'
+                                                aria-label={`Voice channel settings for ${r.name}`}
+                                                aria-haspopup='menu'
+                                                aria-expanded={openRoomMenuId === r.roomId}
+                                                onClick={this.handleToggleRoomMenu(r.roomId)}
                                             >
-                                                <i className='fa fa-trash'/>
+                                                <i
+                                                    className='icon fa fa-cog'
+                                                    aria-hidden='true'
+                                                />
                                             </button>
+                                            {openRoomMenuId === r.roomId && (
+                                                <div
+                                                    id={`voice-room-menu-${r.roomId}`}
+                                                    role='menu'
+                                                    style={style.roomMenu}
+                                                >
+                                                    <button
+                                                        type='button'
+                                                        role='menuitem'
+                                                        style={style.deleteMenuItem}
+                                                        onClick={this.handleDeleteRoomFromMenu(r.roomId)}
+                                                    >
+                                                        {'Delete'}
+                                                    </button>
+                                                </div>
+                                            )}
                                         </span>
                                     )}
                                 </li>
@@ -980,6 +1042,7 @@ const getStyle = () => ({
         overflowY: 'auto',
     },
     roomRow: {
+        position: 'relative',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
@@ -988,6 +1051,9 @@ const getStyle = () => ({
         borderBottom: '1px solid rgba(255,255,255,0.06)',
         color: '#fff',
         fontSize: '0.9em',
+    },
+    roomRowMenuOpen: {
+        paddingBottom: '46px',
     },
     roomName: {
         flex: 1,
@@ -1021,21 +1087,51 @@ const getStyle = () => ({
         opacity: 0.7,
     },
     roomActions: {
+        position: 'relative',
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         gap: 6,
         flexShrink: 0,
     },
-    deleteBtn: {
-        padding: '4px 8px',
+    roomSettingsBtn: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 26,
+        height: 26,
+        padding: 0,
         borderRadius: 4,
         border: 'none',
-        background: 'rgba(210, 75, 75, 0.35)',
-        color: '#ffb4b4',
+        background: 'rgba(255,255,255,0.1)',
+        color: 'rgba(255,255,255,0.75)',
         cursor: 'pointer',
-        fontSize: '0.85em',
+        fontSize: '0.9em',
         lineHeight: 1,
         fontFamily: 'inherit',
+    },
+    roomMenu: {
+        position: 'absolute',
+        top: 'calc(100% + 4px)',
+        right: 0,
+        zIndex: 2,
+        minWidth: '110px',
+        padding: '4px',
+        border: '1px solid rgba(255,255,255,0.14)',
+        borderRadius: 4,
+        background: '#263442',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.35)',
+    },
+    deleteMenuItem: {
+        width: '100%',
+        padding: '6px 10px',
+        border: 'none',
+        borderRadius: 3,
+        background: 'transparent',
+        color: '#ffb4b4',
+        cursor: 'pointer',
+        fontSize: '0.9em',
+        fontFamily: 'inherit',
+        textAlign: 'left',
     },
     roomHint: {
         color: 'rgba(255,255,255,0.5)',
