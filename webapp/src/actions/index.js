@@ -17,12 +17,70 @@ import {buildIceServers} from '../utils/iceServers';
 import pluginSignalHub from '../utils/pluginSignalHub';
 import {getDirectChannelIdForPeer, ensureDirectChannelId} from '../utils/dmChannel';
 import {createVideoInvitePost, sendCallDeclinedEphemeral, newCallId} from '../utils/callInvitePosts';
-import {startIncomingRing, stopIncomingRing} from '../utils/callRing';
+import {startIncomingRing, startOutgoingRingback, stopIncomingRing, stopOutgoingRingback} from '../utils/callRing';
 import {notifyIncomingCall} from '../utils/callBrowserNotify';
 import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../utils/outgoingDeclineListen';
+import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
+import {watchPeerConnection} from '../utils/peerConnectionWatch';
 
 let gStream;
 let cPeer;
+
+/**
+ * The plugin reducer is registered by initialize(), but never assume the slice
+ * is there: reading through it must not throw during webapp boot.
+ */
+function pluginState(getState) {
+    return getState()[`plugins-${pluginId}`] || {};
+}
+
+/**
+ * Signalling resources belonging to the current call. Each subscribe() holds an
+ * open SSE connection, and browsers cap concurrent connections per host, so a
+ * call that ends without releasing these starves the webapp's own requests.
+ * The session-long listener from listenVideoCall() is deliberately not tracked.
+ */
+const callHubs = [];
+const callSwarms = [];
+const callWatches = [];
+
+function trackHub(hub) {
+    callHubs.push(hub);
+    return hub;
+}
+
+function trackSwarm(sw, label, iceServers) {
+    callSwarms.push(sw);
+    callWatches.push(watchPeerConnection(sw, label, iceServers));
+    return sw;
+}
+
+function releaseCallResources() {
+    while (callWatches.length) {
+        const cancel = callWatches.pop();
+        try {
+            cancel();
+        } catch (e) {
+            debug('connection watch cancel failed', e);
+        }
+    }
+    while (callSwarms.length) {
+        const sw = callSwarms.pop();
+        try {
+            sw.close();
+        } catch (e) {
+            debug('swarm close failed', e);
+        }
+    }
+    while (callHubs.length) {
+        const hub = callHubs.pop();
+        try {
+            hub.close();
+        } catch (e) {
+            debug('hub close failed', e);
+        }
+    }
+}
 
 export function openVideoCallPicker(hintChannelId = null) {
     return {
@@ -45,7 +103,7 @@ export function loadConfig() {
             return;
         }
 
-        const {configLoaded} = getState()[`plugins-${pluginId}`];
+        const {configLoaded} = pluginState(getState);
 
         if (configLoaded) {
             return;
@@ -83,19 +141,23 @@ function parseIncomingCallSignal(raw) {
         return null;
     }
     if (typeof raw === 'string') {
-        return {callerId: raw, callId: null};
+        return {callerId: raw, callId: null, audioOnly: false};
     }
     if (typeof raw === 'object' && raw.callerId) {
-        return {callerId: raw.callerId, callId: raw.callId || null};
+        return {
+            callerId: raw.callerId,
+            callId: raw.callId || null,
+            audioOnly: Boolean(raw.audioOnly),
+        };
     }
     return null;
 }
 
-export function makeVideoCall(peerId) {
+export function makeVideoCall(peerId, {audioOnly = false} = {}) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
         const config = getConfig(getState());
-        const {configLoaded, callIncoming, callOutgoing} = getState()[`plugins-${pluginId}`];
+        const {configLoaded, callIncoming, callOutgoing} = pluginState(getState);
 
         if (!configLoaded) {
             debug('Video call: plugin config not loaded. Check Network tab for /plugins/' + pluginId + '/v1/config');
@@ -107,7 +169,15 @@ export function makeVideoCall(peerId) {
             return;
         }
 
-        if (!user.id) {
+        if (!user || !user.id) {
+            return;
+        }
+
+        // Every entry point funnels through here, so this is the one place that
+        // has to hold: a call to yourself negotiates with nobody and sits on
+        // "Connecting…" for ever.
+        if (peerId === user.id) {
+            debug('Video call: you cannot call yourself.');
             return;
         }
 
@@ -120,21 +190,26 @@ export function makeVideoCall(peerId) {
         }
 
         const callId = newCallId();
-        const callhub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${peerId}`);
-        const accepthub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`);
+        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${peerId}`));
+        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
 
         dispatch({
             type: ActionTypes.MAKE_VIDEO_CALL,
             data: {
                 peerId,
                 callId,
+                audioOnly,
             },
         });
+
+        startOutgoingRingback();
 
         listenAccept(user.id, peerId)(dispatch, getState);
 
         attachOutgoingDeclineListener(accepthub, user.id, peerId, () => {
             clearOutgoingDeclineListener();
+            stopOutgoingRingback();
+            releaseCallResources();
             dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
         });
 
@@ -149,21 +224,28 @@ export function makeVideoCall(peerId) {
                 debug('Video call invite post failed (call signalling still proceeds)', e);
             }
             debug(`calling ${peerId} (${callId})`);
-            callhub.broadcast(`call-${peerId}`, {callerId: user.id, callId});
+            callhub.broadcast(`call-${peerId}`, {callerId: user.id, callId, audioOnly});
         })();
     };
 }
 
-export function receiveVideoCall(peerId, callId = null) {
+export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
-        const {callIncoming, callOutgoing} = getState()[`plugins-${pluginId}`];
+        const {callIncoming, callOutgoing} = pluginState(getState);
 
         if (!peerId) {
             return;
         }
 
-        if (!user.id) {
+        if (!user || !user.id) {
+            return;
+        }
+
+        // Signalling topics are shared, so refuse a ring that claims to come
+        // from us however it was produced.
+        if (peerId === user.id) {
+            debug('Ignoring an incoming call that claims to be from ourselves.');
             return;
         }
 
@@ -180,7 +262,15 @@ export function receiveVideoCall(peerId, callId = null) {
             data: {
                 peerId,
                 callId,
+                audioOnly,
             },
+        });
+
+        const config = getConfig(getState());
+        const cancelhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+        attachIncomingCancelListener(cancelhub, user.id, peerId, callId, () => {
+            debug(`call from ${peerId} was cancelled`);
+            endCall()(dispatch, getState);
         });
 
         const peer = getUser(getState(), peerId);
@@ -192,7 +282,7 @@ export function receiveVideoCall(peerId, callId = null) {
 export function listenVideoCall() {
     return (dispatch, getState) => {
         const config = getConfig(getState());
-        const {configLoaded, callListening} = getState()[`plugins-${pluginId}`];
+        const {configLoaded, callListening} = pluginState(getState);
 
         if (!configLoaded) {
             return;
@@ -217,7 +307,7 @@ export function listenVideoCall() {
                 return;
             }
             debug(`call from ${parsed.callerId}`, parsed.callId);
-            receiveVideoCall(parsed.callerId, parsed.callId)(dispatch, getState);
+            receiveVideoCall(parsed.callerId, parsed.callId, parsed.audioOnly)(dispatch, getState);
         });
 
         dispatch({
@@ -230,19 +320,19 @@ function listenAccept(userId, peerId) {
     return (dispatch, getState) => {
         const config = getConfig(getState());
         const user = getUser(getState(), userId);
-        const {configLoaded, callPeerId} = getState()[`plugins-${pluginId}`];
+        const {configLoaded, callPeerId} = pluginState(getState);
 
-        if (!configLoaded) {
+        if (!configLoaded || !user) {
             return;
         }
 
-        const accepthub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`);
+        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
         accepthub.subscribe('all').on('data', ({...a}) => {
             debug('HUB DATA', a);
         });
 
         accepthub.subscribe(`accept-${peerId}`).on('data', (acceptedUserId) => {
-            const {peerAccepted} = getState()[`plugins-${pluginId}`];
+            const {peerAccepted} = pluginState(getState);
             if (acceptedUserId !== userId) {
                 return;
             }
@@ -251,12 +341,12 @@ function listenAccept(userId, peerId) {
                 return;
             }
 
-            const {stunServer: stun2, turnServer: turn2, turnServerUsername: tu2, turnServerCredential: tc2} = getState()[`plugins-${pluginId}`];
+            const {stunServer: stun2, turnServer: turn2, turnServerUsername: tu2, turnServerCredential: tc2} = pluginState(getState);
 
             const iceServers = buildIceServers(stun2, turn2, tu2, tc2);
 
-            const callhub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${callPeerId}`);
-            const sw = swarm(
+            const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${callPeerId}`));
+            const sw = trackSwarm(swarm(
                 callhub,
                 {
                     config: {iceServers},
@@ -267,7 +357,7 @@ function listenAccept(userId, peerId) {
                         return outgoingSignalingData;
                     },
                 },
-            );
+            ), 'caller', iceServers);
 
             sw.on('peer', (peer, id) => {
                 debug('Peer ', peer, id);
@@ -279,21 +369,7 @@ function listenAccept(userId, peerId) {
                     debug('received data', {id, data});
 
                     if (data.type === 'receivedHandshake') {
-                        getUserMedia((error, stream) => {
-                            if (error) {
-                                debug(error);
-                                return;
-                            }
-
-                            gStream = stream;
-                            if (stream) {
-                                peer.addStream(stream);
-                            }
-                            dispatch({
-                                type: ActionTypes.SELF_STREAM_SET,
-                                data: stream,
-                            });
-                        });
+                        captureAndShareMedia(peer, dispatch, getState);
                     }
 
                     if (data.type === 'sendHandshake') {
@@ -324,6 +400,30 @@ function listenAccept(userId, peerId) {
                     userId: user.id,
                 }));
 
+                peer.on('track', (track, streamObj) => {
+                    if (track.kind !== 'video') {
+                        return;
+                    }
+
+                    const {callPeerStream} = pluginState(getState);
+                    if (!callPeerStream) {
+                        // First negotiation; the 'stream' event covers this one.
+                        return;
+                    }
+
+                    /*
+                     * Re-wrap so the object identity changes. The video element
+                     * already points at this MediaStream, and attachStream skips
+                     * a stream it believes is unchanged, so the new camera track
+                     * would otherwise never be shown.
+                     */
+                    debug('peer turned their camera on', id);
+                    dispatch({
+                        type: ActionTypes.PEER_STREAM_RECEIVED,
+                        data: new MediaStream(streamObj.getTracks()),
+                    });
+                });
+
                 peer.on('stream', (streamObj) => {
                     debug('Stream', peer, id);
                     dispatch({
@@ -339,7 +439,17 @@ function listenAccept(userId, peerId) {
                 dispatch({
                     type: ActionTypes.PEER_LOST,
                 });
+
+                /*
+                 * A 1:1 call is over once the peer goes. PEER_LOST only cleared
+                 * the remote stream, and the modal shows "Connecting…" for
+                 * exactly `accepted && !peerStream` — so hanging up on one side
+                 * left the other spinning there for ever.
+                 */
+                endCall()(dispatch, getState);
             });
+
+            stopOutgoingRingback();
 
             dispatch({
                 type: ActionTypes.PEER_ACCEPTED,
@@ -355,22 +465,27 @@ function listenAccept(userId, peerId) {
 export function acceptCall() {
     return (dispatch, getState) => {
         stopIncomingRing();
+        clearIncomingCancelListener();
         const user = getCurrentUser(getState());
         const config = getConfig(getState());
-        const {callPeerId, peerAccepted} = getState()[`plugins-${pluginId}`];
+        const {callPeerId, peerAccepted} = pluginState(getState);
 
-        const accepthub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`);
+        if (!user || !user.id) {
+            return;
+        }
+
+        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
         accepthub.subscribe('all').on('data', ({...a}) => {
             debug('HUB DATA', a);
         });
         accepthub.broadcast(`accept-${user.id}`, callPeerId);
         debug('acceptCall', peerAccepted);
-        const {stunServer, turnServer, turnServerUsername, turnServerCredential} = getState()[`plugins-${pluginId}`];
+        const {stunServer, turnServer, turnServerUsername, turnServerCredential} = pluginState(getState);
 
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        const callhub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`);
-        const sw = swarm(
+        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`));
+        const sw = trackSwarm(swarm(
             callhub,
             {
                 config: {iceServers},
@@ -381,7 +496,7 @@ export function acceptCall() {
                     return outgoingSignalingData;
                 },
             },
-        );
+        ), 'callee', iceServers);
 
         sw.on('peer', (peer, id) => {
             debug('Peer', typeof peer.hasOwnProperty, id);
@@ -394,21 +509,7 @@ export function acceptCall() {
                 debug('received data', {id, data});
 
                 if (data.type === 'receivedHandshake') {
-                    getUserMedia((error, stream) => {
-                        if (error) {
-                            debug(error);
-                            return;
-                        }
-
-                        gStream = stream;
-                        if (stream) {
-                            peer.addStream(stream);
-                        }
-                        dispatch({
-                            type: ActionTypes.SELF_STREAM_SET,
-                            data: stream,
-                        });
-                    });
+                    captureAndShareMedia(peer, dispatch, getState);
                 }
 
                 if (data.type === 'sendHandshake') {
@@ -439,6 +540,30 @@ export function acceptCall() {
                 userId: user.id,
             }));
 
+            peer.on('track', (track, streamObj) => {
+                if (track.kind !== 'video') {
+                    return;
+                }
+
+                const {callPeerStream} = pluginState(getState);
+                if (!callPeerStream) {
+                    // First negotiation; the 'stream' event covers this one.
+                    return;
+                }
+
+                /*
+                 * Re-wrap so the object identity changes. The video element
+                 * already points at this MediaStream, and attachStream skips
+                 * a stream it believes is unchanged, so the new camera track
+                 * would otherwise never be shown.
+                 */
+                debug('peer turned their camera on', id);
+                dispatch({
+                    type: ActionTypes.PEER_STREAM_RECEIVED,
+                    data: new MediaStream(streamObj.getTracks()),
+                });
+            });
+
             peer.on('stream', (streamObj) => {
                 debug('Stream', peer, id);
                 dispatch({
@@ -454,6 +579,14 @@ export function acceptCall() {
             dispatch({
                 type: ActionTypes.PEER_LOST,
             });
+
+            /*
+             * A 1:1 call is over once the peer goes. PEER_LOST only cleared
+             * the remote stream, and the modal shows "Connecting…" for
+             * exactly `accepted && !peerStream` — so hanging up on one side
+             * left the other spinning there for ever.
+             */
+            endCall()(dispatch, getState);
         });
 
         dispatch({
@@ -465,12 +598,13 @@ export function acceptCall() {
 export function rejectCall() {
     return (dispatch, getState) => {
         stopIncomingRing();
-        const state = getState()[`plugins-${pluginId}`];
+        clearIncomingCancelListener();
+        const state = pluginState(getState);
         const user = getCurrentUser(getState());
 
-        if (state.callIncoming && state.callPeerId && user.id) {
+        if (state.callIncoming && state.callPeerId && user && user.id) {
             const config = getConfig(getState());
-            const hub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`);
+            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
             hub.broadcast(`decline-${state.callPeerId}`, {
                 calleeId: user.id,
                 callId: state.activeCallId,
@@ -493,6 +627,7 @@ export function rejectCall() {
         }
 
         clearOutgoingDeclineListener();
+        releaseCallResources();
         dispatch({
             type: ActionTypes.REJECT_CALL,
         });
@@ -500,30 +635,150 @@ export function rejectCall() {
 }
 
 export function endCall() {
-    if (gStream) {
-        gStream.getTracks().forEach((track) => track.stop());
-    }
+    return (dispatch, getState) => {
+        const state = pluginState(getState);
+        const user = getCurrentUser(getState());
 
-    stopIncomingRing();
-    clearOutgoingDeclineListener();
+        /*
+         * A call still ringing has no peer connection for the callee to notice
+         * dropping, so hanging up now would leave their modal ringing for ever.
+         * Once the peers are connected the data channel closing tells them.
+         */
+        if (state.callOutgoing && !state.peerAccepted && state.callPeerId && user && user.id) {
+            const config = getConfig(getState());
+            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+            hub.broadcast(`cancel-${state.callPeerId}`, {
+                callerId: user.id,
+                callId: state.activeCallId,
+            });
+        }
 
-    return {
-        type: ActionTypes.END_CALL,
+        if (gStream) {
+            gStream.getTracks().forEach((track) => track.stop());
+            gStream = null;
+        }
+
+        cPeer = null;
+        stopIncomingRing();
+        stopOutgoingRingback();
+        clearOutgoingDeclineListener();
+        clearIncomingCancelListener();
+        releaseCallResources();
+
+        dispatch({
+            type: ActionTypes.END_CALL,
+        });
     };
 }
 
-function getUserMedia(cb) {
-    navigator.mediaDevices.getUserMedia({video: true, audio: true}).then((stream) => {
-        cb(null, stream);
-    }).catch((e) => {
-        debug(`Cannot initialize camera/microphone: ${e}`); //eslint-disable-line
-        cb(e, null);
+/**
+ * getUserMedia({video, audio}) is atomic: if the camera cannot be opened — two
+ * browsers on one machine competing for it is enough — the whole request
+ * rejects and the call ends up with no media at all, audio included. Walk down
+ * to narrower constraints instead of giving up on the first refusal.
+ */
+const MEDIA_LADDER = [
+    {constraints: {video: true, audio: true}, caps: {video: true, audio: true}},
+    {constraints: {video: false, audio: true}, caps: {video: false, audio: true}},
+    {constraints: {video: true, audio: false}, caps: {video: true, audio: false}},
+];
+
+const AUDIO_ONLY_LADDER = [
+    {constraints: {video: false, audio: true}, caps: {video: false, audio: true}},
+];
+
+function describeMediaError(error) {
+    switch ((error && error.name) || '') {
+    case 'NotAllowedError':
+    case 'SecurityError':
+        return 'Camera and microphone permission was denied.';
+    case 'NotFoundError':
+    case 'OverconstrainedError':
+        return 'No camera or microphone was found on this device.';
+    case 'NotReadableError':
+    case 'AbortError':
+        return 'The camera or microphone is already in use by another application.';
+    default:
+        return 'Could not open the camera or microphone.';
+    }
+}
+
+function getUserMedia(ladder, cb) {
+    const tryStep = (index, lastError) => {
+        if (index >= ladder.length) {
+            debug('Cannot initialize camera/microphone', lastError);
+            cb(lastError, null, {video: false, audio: false});
+            return;
+        }
+
+        const {constraints, caps} = ladder[index];
+        navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+            if (index > 0) {
+                debug(`Media degraded to ${JSON.stringify(constraints)} after`, lastError);
+            }
+            cb(null, stream, caps);
+        }).catch((e) => {
+            debug(`getUserMedia rejected for ${JSON.stringify(constraints)}: ${e}`);
+            tryStep(index + 1, e);
+        });
+    };
+
+    tryStep(0, null);
+}
+
+/**
+ * Both sides run this on `receivedHandshake`; it was duplicated verbatim in the
+ * caller and callee paths.
+ */
+function captureAndShareMedia(peer, dispatch, getState) {
+    // An audio call must not open the camera at all — no ladder, no fallback
+    // that would quietly light it up.
+    const {callAudioOnly} = pluginState(getState);
+    const ladder = callAudioOnly ? AUDIO_ONLY_LADDER : MEDIA_LADDER;
+
+    getUserMedia(ladder, (error, stream, caps) => {
+        if (error || !stream) {
+            dispatch({
+                type: ActionTypes.MEDIA_ERROR,
+                data: describeMediaError(error),
+            });
+            return;
+        }
+
+        gStream = stream;
+        peer.addStream(stream);
+
+        dispatch({type: ActionTypes.SELF_STREAM_SET, data: stream});
+        dispatch({type: ActionTypes.AUDIO_TOGGLE, data: caps.audio});
+        dispatch({type: ActionTypes.VIDEO_TOGGLE, data: caps.video});
+
+        /*
+         * The ladder succeeded, so there is no error to report — but the user
+         * asked for video and did not get it, and silence there just looks like
+         * the camera is broken. The usual cause is another application holding
+         * it, two browsers on one machine included.
+         */
+        if (!callAudioOnly && !caps.video) {
+            dispatch({
+                type: ActionTypes.MEDIA_ERROR,
+                data: 'Your camera could not be opened — another application may be using it. The call continues with audio only.',
+            });
+        }
+
+        // Tell the far side what it is actually getting, so it does not sit
+        // waiting on a video track that was never captured.
+        try {
+            peer.send(JSON.stringify({type: 'audioToggle', enabled: caps.audio}));
+            peer.send(JSON.stringify({type: 'videoToggle', enabled: caps.video}));
+        } catch (e) {
+            debug('Could not announce media capabilities to peer', e);
+        }
     });
 }
 
 export function audioToggle() {
     return (dispatch, getState) => {
-        const {audioOn} = getState()[`plugins-${pluginId}`];
+        const {audioOn} = pluginState(getState);
 
         if (!cPeer) {
             return;
@@ -545,22 +800,61 @@ export function audioToggle() {
 
 export function videoToggle() {
     return (dispatch, getState) => {
-        const {videoOn} = getState()[`plugins-${pluginId}`];
+        const {videoOn} = pluginState(getState);
 
         if (!cPeer) {
             return;
         }
-        if (gStream) {
-            const t = gStream.getVideoTracks()[0];
-            if (t) {
-                t.enabled = !videoOn;
-            }
+
+        const turningOn = !videoOn;
+        const track = gStream && gStream.getVideoTracks()[0];
+
+        /*
+         * A call placed with the phone button never opened the camera, so
+         * turning video on has to acquire it now and put it on the live
+         * connection. simple-peer renegotiates by itself once a track is added.
+         */
+        if (turningOn && !track) {
+            navigator.mediaDevices.getUserMedia({video: true}).then((videoStream) => {
+                const acquired = videoStream.getVideoTracks()[0];
+                if (!acquired || !cPeer) {
+                    return;
+                }
+
+                if (gStream) {
+                    /*
+                     * Add to the stream the peer already holds rather than
+                     * sending a second one: a fresh stream would replace the
+                     * far side's reference and take the audio away with it.
+                     */
+                    gStream.addTrack(acquired);
+                    cPeer.addTrack(acquired, gStream);
+                } else {
+                    gStream = videoStream;
+                    cPeer.addStream(videoStream);
+                }
+
+                // New object for the same tracks, so the preview re-attaches.
+                dispatch({
+                    type: ActionTypes.SELF_STREAM_SET,
+                    data: new MediaStream(gStream.getTracks()),
+                });
+                cPeer.send(JSON.stringify({type: 'videoToggle', enabled: true}));
+                dispatch({type: ActionTypes.VIDEO_TOGGLE, data: true});
+            }).catch((e) => {
+                debug('Could not open the camera mid-call', e);
+                dispatch({
+                    type: ActionTypes.MEDIA_ERROR,
+                    data: describeMediaError(e),
+                });
+            });
+            return;
         }
 
-        if (cPeer) {
-            cPeer.send(JSON.stringify({type: 'videoToggle', enabled: !videoOn}));
+        if (track) {
+            track.enabled = turningOn;
         }
-        dispatch({type: ActionTypes.VIDEO_TOGGLE,
-            data: !videoOn});
+        cPeer.send(JSON.stringify({type: 'videoToggle', enabled: turningOn}));
+        dispatch({type: ActionTypes.VIDEO_TOGGLE, data: turningOn});
     };
 }
