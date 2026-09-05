@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import {Modal} from 'react-bootstrap';
 
 import {userDisplayName} from '../../utils/dmPickerPeers';
+import debug from '../../utils/debug';
 
 export default class VideoCallPicker extends React.PureComponent {
     static propTypes = {
@@ -37,6 +38,10 @@ export default class VideoCallPicker extends React.PureComponent {
     render() {
         const {open, peerRows, hintPeerId, theme} = this.props;
         const {filter} = this.state;
+
+        // Reaching this line at all proves the root component is mounted; `open`
+        // then says whether the reducer saw the click.
+        debug('[picker] render, open =', open, 'dm rows =', peerRows.length);
         const t = theme || {};
         const bg = t.centerChannelBg || '#fff';
         const color = t.centerChannelColor || '#333';

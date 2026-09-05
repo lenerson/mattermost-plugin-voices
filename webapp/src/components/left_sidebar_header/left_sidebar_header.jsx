@@ -3,6 +3,7 @@ import React from 'react';
 import PropTypes from 'prop-types';
 
 import ConnectedVoiceChannel from '../modals/audio_group_call/audio_group_call';
+import debug from '../../utils/debug';
 
 export default class LeftSidebarHeader extends React.PureComponent {
     static propTypes = {
@@ -13,6 +14,7 @@ export default class LeftSidebarHeader extends React.PureComponent {
 
     handleVideoClick = () => {
         const id = this.props.hintChannelId || null;
+        debug('[picker] sidebar button clicked, hint channel', id);
         this.props.openVideoCallPicker(id);
     };
 

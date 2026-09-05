@@ -1,5 +1,5 @@
 import General from 'mattermost-redux/constants/general';
-import {getDirectChannels} from 'mattermost-redux/selectors/entities/channels';
+import {getAllDirectChannels} from 'mattermost-redux/selectors/entities/channels';
 
 import {getDirectMessagePeerUserId} from './dmPeer';
 import {mattermostApiRequest} from './mattermostApi';
@@ -11,10 +11,10 @@ export function getDirectChannelIdForPeer(state, myUserId, peerUserId) {
     if (!myUserId || !peerUserId) {
         return null;
     }
-    const channels = getDirectChannels(state);
+    const channels = getAllDirectChannels(state);
     for (let i = 0; i < channels.length; i++) {
         const ch = channels[i];
-        if (ch.type !== General.DM_CHANNEL) {
+        if (!ch || ch.type !== General.DM_CHANNEL) {
             continue;
         }
         const other = getDirectMessagePeerUserId(state, ch);
