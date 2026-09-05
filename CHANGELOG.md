@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.5 - 2026-09-05
+
+### Changed
+- The active room header no longer duplicates the **Delete** action, which remains available from the channel settings menu. Leaving now uses a compact red phone-hangup control instead of a text button.
+
 ## 2.4.4 - 2026-09-05
 
 ### Added
