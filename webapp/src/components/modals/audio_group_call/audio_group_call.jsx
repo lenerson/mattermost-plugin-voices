@@ -772,7 +772,13 @@ export class AudioCallPanel extends React.Component {
                                     key={r.roomId}
                                     style={style.roomRow}
                                 >
-                                    <div style={style.roomName}>
+                                    <button
+                                        type='button'
+                                        style={style.roomName}
+                                        title={`Join voice channel ${r.name}`}
+                                        aria-label={`Join voice channel ${r.name}`}
+                                        onClick={this.handleJoinRoom(r.roomId, r.name)}
+                                    >
                                         <span style={style.roomTitle}>
                                             <i
                                                 className='icon fa fa-volume-up'
@@ -782,16 +788,9 @@ export class AudioCallPanel extends React.Component {
                                             <span style={style.roomTitleText}>{r.name}</span>
                                         </span>
                                         {this.renderOccupants(r)}
-                                    </div>
-                                    <span style={style.roomActions}>
-                                        <button
-                                            type='button'
-                                            style={style.joinBtn}
-                                            onClick={this.handleJoinRoom(r.roomId, r.name)}
-                                        >
-                                            {'Join'}
-                                        </button>
-                                        {this.canDeleteRoom(r) && (
+                                    </button>
+                                    {this.canDeleteRoom(r) && (
+                                        <span style={style.roomActions}>
                                             <button
                                                 type='button'
                                                 style={style.deleteBtn}
@@ -801,8 +800,8 @@ export class AudioCallPanel extends React.Component {
                                             >
                                                 <i className='fa fa-trash'/>
                                             </button>
-                                        )}
-                                    </span>
+                                        </span>
+                                    )}
                                 </li>
                             ))}
                         </ul>
@@ -996,6 +995,15 @@ const getStyle = () => ({
         display: 'flex',
         flexDirection: 'column',
         gap: '2px',
+        margin: 0,
+        padding: 0,
+        border: 'none',
+        background: 'transparent',
+        color: 'inherit',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 'inherit',
+        textAlign: 'left',
     },
     roomTitle: {
         display: 'flex',
@@ -1017,17 +1025,6 @@ const getStyle = () => ({
         alignItems: 'center',
         gap: 6,
         flexShrink: 0,
-    },
-    joinBtn: {
-        padding: '4px 10px',
-        borderRadius: 4,
-        border: 'none',
-        background: 'rgba(91, 156, 248, 0.25)',
-        color: '#9ec5ff',
-        fontWeight: 600,
-        cursor: 'pointer',
-        fontSize: '0.82em',
-        fontFamily: 'inherit',
     },
     deleteBtn: {
         padding: '4px 8px',

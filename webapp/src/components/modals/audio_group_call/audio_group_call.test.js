@@ -25,6 +25,53 @@ function leaveClosePending() {
     // Simulates a peer that never emits close.
 }
 
+function findElements(node, predicate, matches = []) {
+    if (Array.isArray(node)) {
+        node.forEach((child) => findElements(child, predicate, matches));
+        return matches;
+    }
+    if (!node || typeof node !== 'object') {
+        return matches;
+    }
+    if (predicate(node)) {
+        matches.push(node);
+    }
+
+    const children = node.props && node.props.children;
+    findElements(children, predicate, matches);
+
+    return matches;
+}
+
+describe('AudioCallPanel room directory', () => {
+    test('joins when the room name row is selected without rendering a separate Join button', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.channelList = [{roomId: 'room-1', name: 'Standup', participants: []}];
+        panel.cleanupConnection = (callback) => callback();
+        panel.setState = jest.fn();
+        panel.startPresence = jest.fn();
+
+        const buttons = findElements(panel.render(), (element) => element.type === 'button');
+
+        expect(buttons).toHaveLength(1);
+        expect(buttons[0].props['aria-label']).toBe('Join voice channel Standup');
+
+        const event = {preventDefault: jest.fn()};
+        buttons[0].props.onClick(event);
+
+        expect(event.preventDefault).toHaveBeenCalledTimes(1);
+        expect(panel.setState).toHaveBeenCalledWith(expect.objectContaining({
+            activeRoom: {roomId: 'room-1', name: 'Standup'},
+            audioOn: true,
+        }));
+        expect(panel.startPresence).toHaveBeenCalledWith('room-1');
+    });
+});
+
 describe('AudioCallPanel leaving a room', () => {
     afterEach(() => {
         jest.useRealTimers();
