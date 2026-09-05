@@ -53,11 +53,11 @@ export async function createVoiceRoom(roomId, name) {
  * The server answers with the refreshed directory, so a heartbeat doubles as a
  * poll and the panel stays current without a second request.
  */
-export async function sendVoicePresence(roomId) {
+export async function sendVoicePresence(roomId, audioOn = true) {
     const response = await mattermostApiRequest({
         method: 'post',
         url: `/plugins/${pluginId}/v1/voice/presence`,
-        data: {roomId: roomId || ''},
+        data: {roomId: roomId || '', audioOn: Boolean(audioOn)},
     });
     return toRooms(response);
 }

@@ -22,9 +22,33 @@ const (
 	maxVoicePresencePerRoom = 100
 )
 
-// voicePresence maps a room id to the users in it, each with the time their
-// heartbeat stops counting.
-type voicePresence map[string]map[string]int64
+// voicePresenceEntry carries both expiry and the microphone state advertised
+// by the client. UnmarshalJSON accepts the old integer-only representation so
+// upgrading the plugin does not discard people whose heartbeat is still live.
+type voicePresenceEntry struct {
+	ExpiresAt int64 `json:"expiresAt"`
+	AudioOn   bool  `json:"audioOn"`
+}
+
+func (e *voicePresenceEntry) UnmarshalJSON(data []byte) error {
+	var legacyExpiresAt int64
+	if err := json.Unmarshal(data, &legacyExpiresAt); err == nil {
+		e.ExpiresAt = legacyExpiresAt
+		e.AudioOn = true
+		return nil
+	}
+
+	type entry voicePresenceEntry
+	var decoded entry
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*e = voicePresenceEntry(decoded)
+	return nil
+}
+
+// voicePresence maps a room id to the users in it.
+type voicePresence map[string]map[string]voicePresenceEntry
 
 // participant is what a client needs to show a name without having the user's
 // profile loaded, which someone who never opened that room usually does not.
@@ -33,6 +57,7 @@ type participant struct {
 	Username  string `json:"username"`
 	FirstName string `json:"firstName"`
 	LastName  string `json:"lastName"`
+	AudioOn   bool   `json:"audioOn"`
 }
 
 func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
@@ -57,8 +82,8 @@ func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
 func prunePresence(presence voicePresence, now int64) bool {
 	changed := false
 	for roomID, users := range presence {
-		for userID, expiresAt := range users {
-			if expiresAt <= now {
+		for userID, entry := range users {
+			if entry.ExpiresAt <= now {
 				delete(users, userID)
 				changed = true
 			}
@@ -105,7 +130,7 @@ func (p *Plugin) mutateVoicePresence(mutate func(voicePresence) error) (voicePre
 
 // participantsFor turns the ids held for a room into named participants,
 // skipping anyone the server can no longer resolve.
-func (p *Plugin) participantsFor(users map[string]int64) []participant {
+func (p *Plugin) participantsFor(users map[string]voicePresenceEntry) []participant {
 	ids := make([]string, 0, len(users))
 	for userID := range users {
 		ids = append(ids, userID)
@@ -114,7 +139,7 @@ func (p *Plugin) participantsFor(users map[string]int64) []participant {
 
 	out := make([]participant, 0, len(ids))
 	for _, userID := range ids {
-		entry := participant{ID: userID}
+		entry := participant{ID: userID, AudioOn: users[userID].AudioOn}
 		if user, appErr := p.API.GetUser(userID); appErr == nil && user != nil {
 			entry.Username = user.Username
 			entry.FirstName = user.FirstName
@@ -140,7 +165,8 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 	userID := r.Header.Get("Mattermost-User-Id")
 
 	var body struct {
-		RoomID string `json:"roomId"`
+		RoomID  string `json:"roomId"`
+		AudioOn *bool  `json:"audioOn"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -151,6 +177,10 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 	if len(roomID) > maxVoiceRoomIDLen {
 		http.Error(w, "invalid roomId", http.StatusBadRequest)
 		return
+	}
+	audioOn := true
+	if body.AudioOn != nil {
+		audioOn = *body.AudioOn
 	}
 
 	_, err := p.mutateVoicePresence(func(presence voicePresence) error {
@@ -171,12 +201,15 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if presence[roomID] == nil {
-			presence[roomID] = map[string]int64{}
+			presence[roomID] = map[string]voicePresenceEntry{}
 		}
 		if _, already := presence[roomID][userID]; !already && len(presence[roomID]) >= maxVoicePresencePerRoom {
 			return errVoiceRoomsFull
 		}
-		presence[roomID][userID] = model.GetMillis() + voicePresenceTTLMillis
+		presence[roomID][userID] = voicePresenceEntry{
+			ExpiresAt: model.GetMillis() + voicePresenceTTLMillis,
+			AudioOn:   audioOn,
+		}
 		return nil
 	})
 	if err != nil {

@@ -51,6 +51,14 @@ function hasClassName(className) {
     return (element) => element.props && element.props.className === className;
 }
 
+function hasText(text) {
+    return (element) => element.props && element.props.children === text;
+}
+
+function hasRoleAndAriaLabel(role, label) {
+    return (element) => element.props && element.props.role === role && element.props['aria-label'] === label;
+}
+
 describe('AudioCallPanel room directory', () => {
     test('joins when the room name row is selected without rendering a separate Join button', () => {
         const panel = new AudioCallPanel({
@@ -135,6 +143,27 @@ describe('AudioCallPanel room directory', () => {
         expect(deleteHandler).toHaveBeenCalledWith(deleteEvent);
         expect(panel.state.openRoomMenuId).toBeNull();
     });
+
+    test('keeps the directory heading and shows room controls beside the active title', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+
+        let rendered = panel.render();
+        expect(findElements(rendered, hasText('Voice channels'))).toHaveLength(1);
+        expect(findElements(rendered, hasAriaLabel('Enable microphone'))).toHaveLength(0);
+
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.audioOn = false;
+        rendered = panel.render();
+
+        expect(findElements(rendered, hasText('Voice channels'))).toHaveLength(1);
+        const activeHeader = findElements(rendered, hasRoleAndAriaLabel('group', 'Voice channel Standup controls'))[0];
+        expect(findElements(activeHeader, hasAriaLabel('Enable microphone'))).toHaveLength(1);
+        expect(findElements(activeHeader, hasAriaLabel('Disable voice channel audio'))).toHaveLength(1);
+    });
 });
 
 describe('AudioCallPanel speaker control', () => {
@@ -180,6 +209,36 @@ describe('AudioCallPanel speaker control', () => {
     });
 });
 
+describe('AudioCallPanel participant microphone state', () => {
+    test('publishes the local microphone state with presence', async () => {
+        sendVoicePresence.mockClear();
+        sendVoicePresence.mockResolvedValue([]);
+        const panel = Object.create(AudioCallPanel.prototype);
+        panel.state = {audioOn: true, audioEnabled: false};
+        panel.applyRooms = jest.fn();
+
+        await panel.announcePresence('room-1');
+
+        expect(sendVoicePresence).toHaveBeenCalledWith('room-1', false);
+    });
+
+    test('renders each participant with their current microphone icon', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+
+        const roster = panel.renderRoster([
+            {key: 'anna', name: 'Anna', audioOn: true},
+            {key: 'bruno', name: 'Bruno', audioOn: false},
+        ]);
+
+        expect(findElements(roster, hasAriaLabel("Anna's microphone is enabled"))).toHaveLength(1);
+        expect(findElements(roster, hasAriaLabel("Bruno's microphone is disabled"))).toHaveLength(1);
+    });
+});
+
 describe('AudioCallPanel leaving a room', () => {
     afterEach(() => {
         jest.useRealTimers();
@@ -196,7 +255,7 @@ describe('AudioCallPanel leaving a room', () => {
         await panel.clearPresence();
 
         expect(panel.stopPresence).toHaveBeenCalledTimes(1);
-        expect(sendVoicePresence).toHaveBeenCalledWith('');
+        expect(sendVoicePresence).toHaveBeenCalledWith('', false);
         expect(panel.applyRooms).toHaveBeenCalledWith(rooms);
     });
 

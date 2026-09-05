@@ -26,6 +26,13 @@ func heartbeat(p *Plugin, userID, roomID string) *httptest.ResponseRecorder {
 	})
 }
 
+func heartbeatWithAudio(p *Plugin, userID, roomID string, audioOn bool) *httptest.ResponseRecorder {
+	return voiceRoomsRequest(p, http.MethodPost, "/v1/voice/presence", userID, map[string]interface{}{
+		"roomId":  roomID,
+		"audioOn": audioOn,
+	})
+}
+
 func participantIDs(view voiceRoomView) []string {
 	ids := make([]string, 0, len(view.Participants))
 	for _, entry := range view.Participants {
@@ -72,6 +79,21 @@ func TestVoicePresenceCarriesNames(t *testing.T) {
 	rooms := decodeVoiceRoomViews(t, voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil))
 	require.Len(t, rooms[0].Participants, 1)
 	assert.Equal(t, "talker-handle", rooms[0].Participants[0].Username)
+	assert.True(t, rooms[0].Participants[0].AudioOn, "older clients that omit audioOn default to enabled")
+}
+
+func TestVoicePresenceCarriesMicrophoneState(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeatWithAudio(p, "talker", "room-1", false).Code)
+
+	rooms := decodeVoiceRoomViews(t, voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil))
+	require.Len(t, rooms[0].Participants, 1)
+	assert.False(t, rooms[0].Participants[0].AudioOn)
+
+	require.Equal(t, http.StatusOK, heartbeatWithAudio(p, "talker", "room-1", true).Code)
+	rooms = decodeVoiceRoomViews(t, voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil))
+	assert.True(t, rooms[0].Participants[0].AudioOn)
 }
 
 func TestVoicePresenceListsEveryoneInTheRoom(t *testing.T) {
@@ -122,7 +144,7 @@ func TestVoicePresenceExpires(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 
-	stale := voicePresence{"room-1": {"ghost": model.GetMillis() - 1}}
+	stale := voicePresence{"room-1": {"ghost": {ExpiresAt: model.GetMillis() - 1, AudioOn: true}}}
 	encoded, err := json.Marshal(stale)
 	require.NoError(t, err)
 	kv.values[voicePresenceKey] = encoded
@@ -135,7 +157,7 @@ func TestVoicePresenceHeartbeatKeepsAnEntryAlive(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 
-	aboutToExpire := voicePresence{"room-1": {"talker": model.GetMillis() + 1}}
+	aboutToExpire := voicePresence{"room-1": {"talker": {ExpiresAt: model.GetMillis() + 1, AudioOn: true}}}
 	encoded, err := json.Marshal(aboutToExpire)
 	require.NoError(t, err)
 	kv.values[voicePresenceKey] = encoded
@@ -144,7 +166,21 @@ func TestVoicePresenceHeartbeatKeepsAnEntryAlive(t *testing.T) {
 
 	var stored voicePresence
 	require.NoError(t, json.Unmarshal(kv.values[voicePresenceKey], &stored))
-	assert.Greater(t, stored["room-1"]["talker"], model.GetMillis()+(voicePresenceTTLMillis/2))
+	assert.Greater(t, stored["room-1"]["talker"].ExpiresAt, model.GetMillis()+(voicePresenceTTLMillis/2))
+}
+
+func TestVoicePresenceReadsLegacyExpiryValues(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	legacy := map[string]map[string]int64{
+		"room-1": {"talker": model.GetMillis() + voicePresenceTTLMillis},
+	}
+	encoded, err := json.Marshal(legacy)
+	require.NoError(t, err)
+	kv.values[voicePresenceKey] = encoded
+
+	presence, _, err := p.readVoicePresence()
+	require.NoError(t, err)
+	assert.True(t, presence["room-1"]["talker"].AudioOn)
 }
 
 func TestVoicePresenceRecoversFromCorruptValue(t *testing.T) {

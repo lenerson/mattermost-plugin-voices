@@ -62,11 +62,11 @@ describe('voiceRoomsApi', () => {
         const rooms = [{roomId: 'r1', name: 'Standup', participants: [{id: 'u1'}]}];
         mattermostApiRequest.mockResolvedValue({data: {rooms}});
 
-        await expect(sendVoicePresence('r1')).resolves.toEqual(rooms);
+        await expect(sendVoicePresence('r1', false)).resolves.toEqual(rooms);
         expect(mattermostApiRequest).toHaveBeenCalledWith({
             method: 'post',
             url: '/plugins/mattermost-webrtc-video/v1/voice/presence',
-            data: {roomId: 'r1'},
+            data: {roomId: 'r1', audioOn: false},
         });
     });
 
@@ -80,7 +80,7 @@ describe('voiceRoomsApi', () => {
         await sendVoicePresence(roomId);
 
         expect(mattermostApiRequest).toHaveBeenCalledWith(expect.objectContaining({
-            data: {roomId: ''},
+            data: {roomId: '', audioOn: true},
         }));
     });
 

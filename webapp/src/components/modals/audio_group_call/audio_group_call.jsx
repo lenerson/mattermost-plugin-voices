@@ -185,7 +185,8 @@ export class AudioCallPanel extends React.Component {
     }
 
     announcePresence(roomId) {
-        return sendVoicePresence(roomId).
+        const microphoneOn = Boolean(this.state.audioOn && this.state.audioEnabled);
+        return sendVoicePresence(roomId, microphoneOn).
             then((rooms) => this.applyRooms(rooms)).
             catch((err) => debug('voice presence heartbeat failed', err));
     }
@@ -212,7 +213,7 @@ export class AudioCallPanel extends React.Component {
 
         // Do not wait for the next directory poll: the endpoint returns the
         // refreshed room list, so apply it as soon as the departure lands.
-        return sendVoicePresence('').
+        return sendVoicePresence('', false).
             then((rooms) => this.applyRooms(rooms)).
             catch((err) => debug('clearing voice presence failed', err));
     }
@@ -240,7 +241,15 @@ export class AudioCallPanel extends React.Component {
                             style={style.online}
                             aria-hidden='true'
                         />
-                        {entry.name}
+                        <span style={style.rosterName}>{entry.name}</span>
+                        {typeof entry.audioOn === 'boolean' && (
+                            <i
+                                className={entry.audioOn ? 'icon fa fa-microphone' : 'icon fa fa-microphone-slash'}
+                                style={entry.audioOn ? style.rosterMic : {...style.rosterMic, ...style.rosterMicOff}}
+                                title={entry.audioOn ? `${entry.name}'s microphone is enabled` : `${entry.name}'s microphone is disabled`}
+                                aria-label={entry.audioOn ? `${entry.name}'s microphone is enabled` : `${entry.name}'s microphone is disabled`}
+                            />
+                        )}
                     </li>
                 ))}
             </ul>
@@ -261,6 +270,7 @@ export class AudioCallPanel extends React.Component {
             name: userDisplayName((profilesById || {})[entry.id]) ||
                 userDisplayName({first_name: entry.firstName, last_name: entry.lastName, username: entry.username}) ||
                 'Unknown user',
+            audioOn: entry.audioOn !== false,
         })));
     }
 
@@ -493,7 +503,11 @@ export class AudioCallPanel extends React.Component {
         const {myStream, audioEnabled, videoEnabled} = await getMyStream();
         debug({audioEnabled, videoEnabled});
         this.currentMyStream = myStream;
-        this.setState({initialized: true, myStream, audioEnabled, videoEnabled});
+        this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
+            if (this.state.activeRoom) {
+                this.announcePresence(this.state.activeRoom.roomId);
+            }
+        });
     }
 
     connectToSwarm(userId) {
@@ -690,8 +704,10 @@ export class AudioCallPanel extends React.Component {
                 }
             }
         }
-        this.setState({
-            audioOn: !audioOn,
+        this.setState({audioOn: !audioOn}, () => {
+            if (this.state.activeRoom) {
+                this.announcePresence(this.state.activeRoom.roomId);
+            }
         });
     }
 
@@ -710,6 +726,49 @@ export class AudioCallPanel extends React.Component {
         });
     }
 
+    renderVoiceControls() {
+        const {audioOn, speakerOn} = this.state;
+        const style = getStyle();
+
+        return (
+            <span style={style.voiceControls}>
+                <button
+                    type='button'
+                    style={style.voiceControlButton}
+                    onClick={this.handleAudioToggle.bind(this)}
+                    title={audioOn ? 'Disable microphone' : 'Enable microphone'}
+                    aria-label={audioOn ? 'Disable microphone' : 'Enable microphone'}
+                >
+                    <i
+                        className={audioOn ? 'icon fa fa-microphone fa-lg' : 'icon fa fa-microphone-slash fa-lg'}
+                        aria-hidden='true'
+                    />
+                </button>
+                <button
+                    type='button'
+                    style={style.voiceControlButton}
+                    onClick={this.handleSpeakerToggle.bind(this)}
+                    title={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
+                    aria-label={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
+                >
+                    <span style={style.speakerIcon}>
+                        <i
+                            className='icon fa fa-volume-up fa-lg'
+                            aria-hidden='true'
+                        />
+                        {!speakerOn && (
+                            <span
+                                className='voice-channel-speaker-slash'
+                                style={style.speakerSlash}
+                                aria-hidden='true'
+                            />
+                        )}
+                    </span>
+                </button>
+            </span>
+        );
+    }
+
     render() {
         const {
             userId,
@@ -717,7 +776,6 @@ export class AudioCallPanel extends React.Component {
             swarmInitialized,
             audioOn,
             audioEnabled,
-            speakerOn,
             peerStreams,
             activeRoom,
             channelList,
@@ -752,200 +810,180 @@ export class AudioCallPanel extends React.Component {
 
         return (
             <div style={style.container}>
-                {!activeRoom && (
-                    <div style={style.section}>
-                        <div style={style.sectionHeader}>
-                            <span style={style.sectionTitle}>{'Voice channels'}</span>
-                            {isSystemAdmin && (
-                                <button
-                                    type='button'
-                                    style={style.linkBtn}
-                                    onClick={this.handleToggleCreate}
-                                >
-                                    {showCreateInput ? 'Cancel' : '+ New'}
-                                </button>
-                            )}
-                        </div>
-                        {isSystemAdmin && showCreateInput && (
-                            <div style={style.createBox}>
-                                <label
-                                    htmlFor='webrtc-voice-channel-name'
-                                    style={style.label}
-                                >
-                                    {'Name this voice channel'}
-                                </label>
-                                <input
-                                    id='webrtc-voice-channel-name'
-                                    type='text'
-                                    style={style.input}
-                                    placeholder='e.g. Standup, Sprint planning…'
-                                    value={newChannelNameDraft}
-                                    onChange={(ev) => this.setState({newChannelNameDraft: ev.target.value})}
-                                    onKeyDown={(ev) => {
-                                        if (ev.key === 'Enter') {
-                                            this.handleCreateChannel(ev);
-                                        }
-                                    }}
-                                />
-                                <button
-                                    type='button'
-                                    style={style.primaryBtn}
-                                    onClick={this.handleCreateChannel}
-                                >
-                                    {'Create and join'}
-                                </button>
-                            </div>
-                        )}
-                        {directoryError && (
-                            <div style={style.roomHint}>{directoryError}</div>
-                        )}
-                        <ul style={openRoomMenuId ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
-                            {channelList.length === 0 && !showCreateInput && (
-                                <li style={style.roomHint}>
-                                    {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
-                                </li>
-                            )}
-                            {channelList.map((r) => (
-                                <li
-                                    key={r.roomId}
-                                    style={style.roomRow}
-                                    onMouseEnter={this.handleRoomRowEnter(r.roomId)}
-                                    onMouseLeave={this.handleRoomRowLeave(r.roomId)}
-                                    onFocus={this.handleRoomRowEnter(r.roomId)}
-                                    onBlur={this.handleRoomRowBlur(r.roomId)}
-                                >
-                                    <button
-                                        type='button'
-                                        style={style.roomName}
-                                        title={`Join voice channel ${r.name}`}
-                                        aria-label={`Join voice channel ${r.name}`}
-                                        onClick={this.handleJoinRoom(r.roomId, r.name)}
-                                    >
-                                        <span style={style.roomTitle}>
-                                            <i
-                                                className='icon fa fa-volume-up'
-                                                style={style.roomIcon}
-                                                aria-hidden='true'
-                                            />
-                                            <span style={style.roomTitleText}>{r.name}</span>
-                                        </span>
-                                        {this.renderOccupants(r)}
-                                    </button>
-                                    {this.canDeleteRoom(r) && (
-                                        <span style={style.roomActions}>
-                                            <button
-                                                type='button'
-                                                style={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? style.roomSettingsBtn : {...style.roomSettingsBtn, ...style.roomSettingsBtnHidden}}
-                                                title='Voice channel settings'
-                                                aria-label={`Voice channel settings for ${r.name}`}
-                                                aria-haspopup='menu'
-                                                aria-expanded={openRoomMenuId === r.roomId}
-                                                aria-hidden={hoveredRoomId !== r.roomId && openRoomMenuId !== r.roomId}
-                                                tabIndex={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? 0 : -1}
-                                                onClick={this.handleToggleRoomMenu(r.roomId)}
-                                            >
-                                                <i
-                                                    className='icon fa fa-cog'
-                                                    aria-hidden='true'
-                                                />
-                                            </button>
-                                            {openRoomMenuId === r.roomId && (
-                                                <div
-                                                    id={`voice-room-menu-${r.roomId}`}
-                                                    role='menu'
-                                                    style={style.roomMenu}
-                                                >
-                                                    <button
-                                                        type='button'
-                                                        role='menuitem'
-                                                        style={style.deleteMenuItem}
-                                                        onClick={this.handleDeleteRoomFromMenu(r.roomId)}
-                                                    >
-                                                        {'Delete'}
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </span>
-                                    )}
-                                </li>
-                            ))}
-                        </ul>
-                    </div>
-                )}
-
-                {activeRoom && (
-                    <div style={style.section}>
-                        <div style={style.inRoomHeader}>
-                            <span style={style.inRoomTitle}>
-                                <i
-                                    className='icon fa fa-volume-up'
-                                    style={style.roomIcon}
-                                    aria-hidden='true'
-                                />
-                                <span style={style.roomTitleText}>{activeRoom.name}</span>
-                            </span>
-                            <span style={style.inRoomHeaderActions}>
-                                {currentRoom && this.canDeleteRoom(currentRoom) && (
-                                    <button
-                                        type='button'
-                                        style={style.deleteChannelBtn}
-                                        onClick={this.handleDeleteRoom(activeRoom.roomId)}
-                                        title='Delete this voice channel for everyone and leave'
-                                    >
-                                        {'Delete'}
-                                    </button>
-                                )}
-                                <button
-                                    type='button'
-                                    style={style.leaveBtn}
-                                    onClick={this.handleLeaveRoom}
-                                    title='Leave voice channel'
-                                >
-                                    {'Leave'}
-                                </button>
-                            </span>
-                        </div>
-                        <div style={style.flexContainer}>
-                            <i
-                                className={audioOn ? 'icon fa fa-microphone fa-lg' : 'icon fa fa-microphone-slash  fa-lg'}
-                                style={style.button}
-                                onClick={this.handleAudioToggle.bind(this)}
-                                role='button'
-                                tabIndex={0}
-                                onKeyDown={(ev) => ev.key === 'Enter' && this.handleAudioToggle()}
-                            />
+                <div style={style.section}>
+                    <div style={style.sectionHeader}>
+                        <span style={style.sectionTitle}>{'Voice channels'}</span>
+                        {!activeRoom && isSystemAdmin && (
                             <button
                                 type='button'
-                                style={style.speakerButton}
-                                onClick={this.handleSpeakerToggle.bind(this)}
-                                title={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
-                                aria-label={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
+                                style={style.linkBtn}
+                                onClick={this.handleToggleCreate}
                             >
-                                <span style={style.speakerIcon}>
-                                    <i
-                                        className='icon fa fa-volume-up fa-lg'
-                                        aria-hidden='true'
+                                {showCreateInput ? 'Cancel' : '+ New'}
+                            </button>
+                        )}
+                    </div>
+
+                    {!activeRoom && (
+                        <>
+                            {isSystemAdmin && showCreateInput && (
+                                <div style={style.createBox}>
+                                    <label
+                                        htmlFor='webrtc-voice-channel-name'
+                                        style={style.label}
+                                    >
+                                        {'Name this voice channel'}
+                                    </label>
+                                    <input
+                                        id='webrtc-voice-channel-name'
+                                        type='text'
+                                        style={style.input}
+                                        placeholder='e.g. Standup, Sprint planning…'
+                                        value={newChannelNameDraft}
+                                        onChange={(ev) => this.setState({newChannelNameDraft: ev.target.value})}
+                                        onKeyDown={(ev) => {
+                                            if (ev.key === 'Enter') {
+                                                this.handleCreateChannel(ev);
+                                            }
+                                        }}
                                     />
-                                    {!speakerOn && (
-                                        <span
-                                            className='voice-channel-speaker-slash'
-                                            style={style.speakerSlash}
+                                    <button
+                                        type='button'
+                                        style={style.primaryBtn}
+                                        onClick={this.handleCreateChannel}
+                                    >
+                                        {'Create and join'}
+                                    </button>
+                                </div>
+                            )}
+                            {directoryError && (
+                                <div style={style.roomHint}>{directoryError}</div>
+                            )}
+                            <ul style={openRoomMenuId ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
+                                {channelList.length === 0 && !showCreateInput && (
+                                    <li style={style.roomHint}>
+                                        {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
+                                    </li>
+                                )}
+                                {channelList.map((r) => (
+                                    <li
+                                        key={r.roomId}
+                                        style={style.roomRow}
+                                        onMouseEnter={this.handleRoomRowEnter(r.roomId)}
+                                        onMouseLeave={this.handleRoomRowLeave(r.roomId)}
+                                        onFocus={this.handleRoomRowEnter(r.roomId)}
+                                        onBlur={this.handleRoomRowBlur(r.roomId)}
+                                    >
+                                        <button
+                                            type='button'
+                                            style={style.roomName}
+                                            title={`Join voice channel ${r.name}`}
+                                            aria-label={`Join voice channel ${r.name}`}
+                                            onClick={this.handleJoinRoom(r.roomId, r.name)}
+                                        >
+                                            <span style={style.roomTitle}>
+                                                <i
+                                                    className='icon fa fa-volume-up'
+                                                    style={style.roomIcon}
+                                                    aria-hidden='true'
+                                                />
+                                                <span style={style.roomTitleText}>{r.name}</span>
+                                            </span>
+                                            {this.renderOccupants(r)}
+                                        </button>
+                                        {this.canDeleteRoom(r) && (
+                                            <span style={style.roomActions}>
+                                                <button
+                                                    type='button'
+                                                    style={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? style.roomSettingsBtn : {...style.roomSettingsBtn, ...style.roomSettingsBtnHidden}}
+                                                    title='Voice channel settings'
+                                                    aria-label={`Voice channel settings for ${r.name}`}
+                                                    aria-haspopup='menu'
+                                                    aria-expanded={openRoomMenuId === r.roomId}
+                                                    aria-hidden={hoveredRoomId !== r.roomId && openRoomMenuId !== r.roomId}
+                                                    tabIndex={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? 0 : -1}
+                                                    onClick={this.handleToggleRoomMenu(r.roomId)}
+                                                >
+                                                    <i
+                                                        className='icon fa fa-cog'
+                                                        aria-hidden='true'
+                                                    />
+                                                </button>
+                                                {openRoomMenuId === r.roomId && (
+                                                    <div
+                                                        id={`voice-room-menu-${r.roomId}`}
+                                                        role='menu'
+                                                        style={style.roomMenu}
+                                                    >
+                                                        <button
+                                                            type='button'
+                                                            role='menuitem'
+                                                            style={style.deleteMenuItem}
+                                                            onClick={this.handleDeleteRoomFromMenu(r.roomId)}
+                                                        >
+                                                            {'Delete'}
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </span>
+                                        )}
+                                    </li>
+                                ))}
+                            </ul>
+                        </>
+                    )}
+
+                    {activeRoom && (
+                        <>
+                            <div style={style.inRoomHeader}>
+                                <span
+                                    style={style.inRoomIdentity}
+                                    role='group'
+                                    aria-label={`Voice channel ${activeRoom.name} controls`}
+                                >
+                                    <span style={style.inRoomTitle}>
+                                        <i
+                                            className='icon fa fa-volume-up'
+                                            style={style.roomIcon}
                                             aria-hidden='true'
                                         />
-                                    )}
+                                        <span style={style.roomTitleText}>{activeRoom.name}</span>
+                                    </span>
+                                    {this.renderVoiceControls()}
                                 </span>
-                            </button>
-                        </div>
-                        <p style={style.hint}>{connectionHint}</p>
-                        {this.renderRoster([
-                            ...(swarmInitialized ? [{key: 'self', name: selfName}] : []),
-                            ...Object.keys(peerStreams).map((id) => ({
-                                key: id,
-                                name: this.peerDisplayName(id, peerStreams[id]),
-                            })),
-                        ])}
-                    </div>
-                )}
+                                <span style={style.inRoomHeaderActions}>
+                                    {currentRoom && this.canDeleteRoom(currentRoom) && (
+                                        <button
+                                            type='button'
+                                            style={style.deleteChannelBtn}
+                                            onClick={this.handleDeleteRoom(activeRoom.roomId)}
+                                            title='Delete this voice channel for everyone and leave'
+                                        >
+                                            {'Delete'}
+                                        </button>
+                                    )}
+                                    <button
+                                        type='button'
+                                        style={style.leaveBtn}
+                                        onClick={this.handleLeaveRoom}
+                                        title='Leave voice channel'
+                                    >
+                                        {'Leave'}
+                                    </button>
+                                </span>
+                            </div>
+                            <p style={style.hint}>{connectionHint}</p>
+                            {this.renderRoster([
+                                ...(swarmInitialized ? [{key: 'self', name: selfName, audioOn: Boolean(audioOn && audioEnabled)}] : []),
+                                ...Object.keys(peerStreams).map((id) => ({
+                                    key: id,
+                                    name: this.peerDisplayName(id, peerStreams[id]),
+                                    audioOn: peerStreams[id].audioOn !== false,
+                                })),
+                            ])}
+                        </>
+                    )}
+                </div>
             </div>
         );
     }
@@ -1169,6 +1207,13 @@ const getStyle = () => ({
         padding: '0 10px 8px',
         gap: 8,
     },
+    inRoomIdentity: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flex: 1,
+        minWidth: 0,
+    },
     inRoomTitle: {
         color: '#fff',
         fontWeight: 600,
@@ -1176,7 +1221,27 @@ const getStyle = () => ({
         display: 'flex',
         alignItems: 'center',
         gap: '6px',
+        flex: '0 1 auto',
         minWidth: 0,
+    },
+    voiceControls: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 2,
+        flexShrink: 0,
+    },
+    voiceControlButton: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 26,
+        height: 26,
+        padding: 0,
+        border: 'none',
+        borderRadius: 4,
+        background: 'transparent',
+        color: 'white',
+        cursor: 'pointer',
     },
     inRoomHeaderActions: {
         display: 'flex',
@@ -1211,25 +1276,6 @@ const getStyle = () => ({
         color: 'rgba(255,255,255,0.45)',
         lineHeight: 1.3,
     },
-    button: {
-        margin: '5px',
-        color: 'white',
-        flexGrow: '1',
-        padding: '3px',
-        cursor: 'pointer',
-    },
-    speakerButton: {
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        flexGrow: 1,
-        margin: '5px',
-        padding: '3px',
-        border: 'none',
-        background: 'transparent',
-        color: 'white',
-        cursor: 'pointer',
-    },
     speakerIcon: {
         position: 'relative',
         display: 'inline-flex',
@@ -1250,19 +1296,32 @@ const getStyle = () => ({
         transformOrigin: 'center',
         pointerEvents: 'none',
     },
-    flexContainer: {
-        display: 'flex',
-        padding: '0 10px',
-    },
     list: {
         listStyleType: 'none',
         margin: 0,
         padding: '0 10px',
     },
     listItem: {
+        display: 'flex',
+        alignItems: 'center',
         color: 'white',
         fontSize: '0.88em',
         padding: '2px 0',
+    },
+    rosterName: {
+        minWidth: 0,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+    },
+    rosterMic: {
+        flex: '0 0 auto',
+        marginLeft: 6,
+        color: 'rgba(255,255,255,0.85)',
+        fontSize: '0.9em',
+    },
+    rosterMicOff: {
+        color: 'rgba(255,255,255,0.45)',
     },
     online: {
         color: '#4cd6a1',
