@@ -129,6 +129,7 @@ export class AudioCallPanel extends React.Component {
         this.presenceHeartbeat = null;
         this.currentMyStream = null;
         this.connectPending = false;
+        this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
     }
@@ -177,6 +178,7 @@ export class AudioCallPanel extends React.Component {
         if (!this.unsubscribeDirectoryEvents) {
             this.unsubscribeDirectoryEvents = subscribeVoicePresenceChanges((change) => {
                 this.handlePresenceSound(change);
+                this.handleExclusivePresenceChange(change);
                 this.refreshRooms();
             });
         }
@@ -200,6 +202,21 @@ export class AudioCallPanel extends React.Component {
         }
         if (leftRoomID && (isCurrentUser || (activeRoom && activeRoom.roomId === leftRoomID))) {
             playVoiceRoomLeaveSound();
+        }
+    }
+
+    handleExclusivePresenceChange(change) {
+        const {activeRoom} = this.state;
+        const movedFromThisRoom = change.userId === this.props.userId &&
+            activeRoom &&
+            change.previousRoomId === activeRoom.roomId &&
+            change.roomId !== activeRoom.roomId;
+
+        // Presence is keyed by user on the server. If another tab moves this
+        // user, stop this tab's heartbeat and media so it cannot move the user
+        // back or remain connected to two WebRTC swarms.
+        if (movedFromThisRoom) {
+            this.disconnectLocalRoom();
         }
     }
 
@@ -428,7 +445,40 @@ export class AudioCallPanel extends React.Component {
         finish();
     }
 
+    resetActiveRoomState() {
+        if (!this.isUnmounted) {
+            this.setState({
+                activeRoom: null,
+                initialized: false,
+                swarmInitialized: false,
+                peerStreams: {},
+                playBacks: {},
+                audioOn: false,
+                speakerOn: false,
+            });
+        }
+    }
+
+    disconnectLocalRoom() {
+        this.roomTransitionId += 1;
+        this.stopPresence();
+        this.connectPending = true;
+
+        const finish = () => {
+            this.connectPending = false;
+        };
+        try {
+            this.cleanupConnection(finish);
+        } catch (e) {
+            debug('voice connection cleanup failed', e);
+            finish();
+        } finally {
+            this.resetActiveRoomState();
+        }
+    }
+
     leaveRoomInternal(cb) {
+        this.roomTransitionId += 1;
         this.connectPending = false;
 
         // Presence and local UI must change immediately. Closing a WebRTC swarm
@@ -444,17 +494,7 @@ export class AudioCallPanel extends React.Component {
                 cb();
             }
         } finally {
-            if (!this.isUnmounted) {
-                this.setState({
-                    activeRoom: null,
-                    initialized: false,
-                    swarmInitialized: false,
-                    peerStreams: {},
-                    playBacks: {},
-                    audioOn: false,
-                    speakerOn: false,
-                });
-            }
+            this.resetActiveRoomState();
         }
     }
 
@@ -475,7 +515,14 @@ export class AudioCallPanel extends React.Component {
         if (activeRoom && activeRoom.roomId === roomId) {
             return;
         }
-        this.cleanupConnection(() => {
+
+        const transitionId = ++this.roomTransitionId;
+        this.stopPresence();
+        this.connectPending = true;
+        const finishJoin = () => {
+            if (transitionId !== this.roomTransitionId) {
+                return;
+            }
             this.connectPending = false;
             if (this.isUnmounted) {
                 return;
@@ -492,9 +539,21 @@ export class AudioCallPanel extends React.Component {
                 videoEnabled: false,
                 hoveredRoomId: null,
                 openRoomMenuId: null,
+            }, () => {
+                if (transitionId === this.roomTransitionId) {
+                    this.startPresence(roomId);
+                }
             });
-            this.startPresence(roomId);
-        });
+        };
+
+        try {
+            // The next room is activated only after playback, media tracks,
+            // and the previous WebRTC swarm have all been closed.
+            this.cleanupConnection(finishJoin);
+        } catch (error) {
+            debug('voice connection cleanup failed while switching rooms', error);
+            finishJoin();
+        }
     };
 
     handleCreateChannel = (e) => {
@@ -841,6 +900,7 @@ export class AudioCallPanel extends React.Component {
 
         const {isSystemAdmin} = this.props;
         const selfName = this.props.displayName || 'You';
+        const activeRoomEntry = activeRoom && (channelList.find((room) => room.roomId === activeRoom.roomId) || activeRoom);
 
         let connectionHint = '';
         if (!swarmInitialized) {
@@ -860,7 +920,7 @@ export class AudioCallPanel extends React.Component {
                 <div style={style.section}>
                     <div style={style.sectionHeader}>
                         <span style={style.sectionTitle}>{'Voice channels'}</span>
-                        {!activeRoom && isSystemAdmin && (
+                        {isSystemAdmin && (
                             <button
                                 type='button'
                                 style={style.linkBtn}
@@ -871,7 +931,7 @@ export class AudioCallPanel extends React.Component {
                         )}
                     </div>
 
-                    {!activeRoom && (
+                    {Array.isArray(channelList) && (
                         <>
                             {isSystemAdmin && showCreateInput && (
                                 <div style={style.createBox}>
@@ -907,12 +967,12 @@ export class AudioCallPanel extends React.Component {
                                 <div style={style.roomHint}>{directoryError}</div>
                             )}
                             <ul style={openRoomMenuId ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
-                                {channelList.length === 0 && !showCreateInput && (
+                                {channelList.length === 0 && !showCreateInput && !activeRoom && (
                                     <li style={style.roomHint}>
                                         {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
                                     </li>
                                 )}
-                                {channelList.map((r) => (
+                                {channelList.filter((room) => !activeRoom || room.roomId !== activeRoom.roomId).map((r) => (
                                     <li
                                         key={r.roomId}
                                         style={style.roomRow}
@@ -982,7 +1042,13 @@ export class AudioCallPanel extends React.Component {
 
                     {activeRoom && (
                         <>
-                            <div style={style.inRoomHeader}>
+                            <div
+                                style={style.inRoomHeader}
+                                onMouseEnter={this.handleRoomRowEnter(activeRoom.roomId)}
+                                onMouseLeave={this.handleRoomRowLeave(activeRoom.roomId)}
+                                onFocus={this.handleRoomRowEnter(activeRoom.roomId)}
+                                onBlur={this.handleRoomRowBlur(activeRoom.roomId)}
+                            >
                                 <span
                                     style={style.inRoomIdentity}
                                     role='group'
@@ -999,6 +1065,42 @@ export class AudioCallPanel extends React.Component {
                                     {this.renderVoiceControls()}
                                 </span>
                                 <span style={style.inRoomHeaderActions}>
+                                    {this.canDeleteRoom(activeRoomEntry) && (
+                                        <span style={style.roomActions}>
+                                            <button
+                                                type='button'
+                                                style={hoveredRoomId === activeRoom.roomId || openRoomMenuId === activeRoom.roomId ? style.roomSettingsBtn : {...style.roomSettingsBtn, ...style.roomSettingsBtnHidden}}
+                                                title='Voice channel settings'
+                                                aria-label={`Voice channel settings for ${activeRoom.name}`}
+                                                aria-haspopup='menu'
+                                                aria-expanded={openRoomMenuId === activeRoom.roomId}
+                                                aria-hidden={hoveredRoomId !== activeRoom.roomId && openRoomMenuId !== activeRoom.roomId}
+                                                tabIndex={hoveredRoomId === activeRoom.roomId || openRoomMenuId === activeRoom.roomId ? 0 : -1}
+                                                onClick={this.handleToggleRoomMenu(activeRoom.roomId)}
+                                            >
+                                                <i
+                                                    className='icon fa fa-cog'
+                                                    aria-hidden='true'
+                                                />
+                                            </button>
+                                            {openRoomMenuId === activeRoom.roomId && (
+                                                <div
+                                                    id={`voice-room-menu-${activeRoom.roomId}`}
+                                                    role='menu'
+                                                    style={style.roomMenu}
+                                                >
+                                                    <button
+                                                        type='button'
+                                                        role='menuitem'
+                                                        style={style.deleteMenuItem}
+                                                        onClick={this.handleDeleteRoomFromMenu(activeRoom.roomId)}
+                                                    >
+                                                        {'Delete'}
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </span>
+                                    )}
                                     <button
                                         type='button'
                                         style={style.hangupBtn}

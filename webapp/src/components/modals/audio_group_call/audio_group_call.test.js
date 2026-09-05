@@ -91,7 +91,12 @@ describe('AudioCallPanel room directory', () => {
         });
         panel.state.channelList = [{roomId: 'room-1', name: 'Standup', participants: []}];
         panel.cleanupConnection = (callback) => callback();
-        panel.setState = jest.fn();
+        panel.setState = jest.fn((update, callback) => {
+            panel.state = {...panel.state, ...update};
+            if (callback) {
+                callback();
+            }
+        });
         panel.startPresence = jest.fn();
 
         const buttons = findElements(panel.render(), (element) => element.type === 'button');
@@ -107,7 +112,7 @@ describe('AudioCallPanel room directory', () => {
             activeRoom: {roomId: 'room-1', name: 'Standup'},
             audioOn: true,
             speakerOn: true,
-        }));
+        }), expect.any(Function));
         expect(panel.startPresence).toHaveBeenCalledWith('room-1');
     });
 
@@ -179,7 +184,10 @@ describe('AudioCallPanel room directory', () => {
         expect(findElements(rendered, hasAriaLabel('Enable microphone'))).toHaveLength(0);
 
         panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
-        panel.state.channelList = [{roomId: 'room-1', name: 'Standup', creatorId: 'user-1', participants: []}];
+        panel.state.channelList = [
+            {roomId: 'room-1', name: 'Standup', creatorId: 'user-1', participants: []},
+            {roomId: 'room-2', name: 'Planning', creatorId: 'user-1', participants: []},
+        ];
         panel.state.audioOn = false;
         rendered = panel.render();
 
@@ -187,6 +195,10 @@ describe('AudioCallPanel room directory', () => {
         const activeHeader = findElements(rendered, hasRoleAndAriaLabel('group', 'Voice channel Standup controls'))[0];
         expect(findElements(activeHeader, hasAriaLabel('Enable microphone'))).toHaveLength(1);
         expect(findElements(activeHeader, hasAriaLabel('Disable voice channel audio'))).toHaveLength(1);
+        expect(findElements(rendered, hasAriaLabel('Join voice channel Planning'))).toHaveLength(1);
+        expect(findElements(rendered, hasAriaLabel('Join voice channel Standup'))).toHaveLength(0);
+        expect(findElements(rendered, hasAriaLabel('Voice channel settings for Standup'))).toHaveLength(1);
+        expect(findElements(rendered, hasAriaLabel('Voice channel settings for Planning'))).toHaveLength(1);
         expect(findElements(rendered, hasText('Delete'))).toHaveLength(0);
 
         const hangupControl = findElements(rendered, hasAriaLabel('Leave voice channel'))[0];
@@ -209,6 +221,56 @@ describe('AudioCallPanel room directory', () => {
         panel.state.audioOn = false;
         rendered = panel.render();
         expect(findElements(rendered, hasText('You are connected, with your microphone muted.'))).toHaveLength(0);
+    });
+
+    test('finishes closing the current room before joining another one', () => {
+        const cleanup = {};
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.stopPresence = jest.fn();
+        panel.cleanupConnection = jest.fn(captureCleanupCallback(cleanup));
+        panel.startPresence = jest.fn();
+        panel.setState = (update, callback) => {
+            panel.state = {...panel.state, ...update};
+            if (callback) {
+                callback();
+            }
+        };
+
+        panel.handleJoinRoom('room-2', 'Planning')({preventDefault: jest.fn()});
+
+        expect(panel.stopPresence).toHaveBeenCalledTimes(1);
+        expect(panel.cleanupConnection).toHaveBeenCalledTimes(1);
+        expect(panel.connectPending).toBe(true);
+        expect(panel.state.activeRoom).toEqual({roomId: 'room-1', name: 'Standup'});
+        expect(panel.startPresence).not.toHaveBeenCalled();
+
+        cleanup.finish();
+
+        expect(panel.connectPending).toBe(false);
+        expect(panel.state.activeRoom).toEqual({roomId: 'room-2', name: 'Planning'});
+        expect(panel.startPresence).toHaveBeenCalledWith('room-2');
+    });
+
+    test('disconnects this tab when the same user moves rooms elsewhere', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.disconnectLocalRoom = jest.fn();
+
+        panel.handleExclusivePresenceChange({userId: 'user-2', previousRoomId: 'room-1', roomId: 'room-2'});
+        panel.handleExclusivePresenceChange({userId: 'user-1', previousRoomId: 'room-1', roomId: 'room-1'});
+        expect(panel.disconnectLocalRoom).not.toHaveBeenCalled();
+
+        panel.handleExclusivePresenceChange({userId: 'user-1', previousRoomId: 'room-1', roomId: 'room-2'});
+        expect(panel.disconnectLocalRoom).toHaveBeenCalledTimes(1);
     });
 });
 
@@ -387,6 +449,7 @@ describe('AudioCallPanel leaving a room', () => {
             cleanupConnection: jest.fn(captureCleanupCallback(cleanup)),
             setState: jest.fn(),
         };
+        panel.resetActiveRoomState = () => AudioCallPanel.prototype.resetActiveRoomState.call(panel);
 
         AudioCallPanel.prototype.leaveRoomInternal.call(panel, done);
 
