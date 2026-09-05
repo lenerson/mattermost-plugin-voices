@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.1 - 2026-09-04
+
+### Changed
+- Selecting a voice channel's name and participant row now joins it directly. The separate **Join** button was removed, and the row remains accessible by keyboard.
+
+### Fixed
+- Leaving a voice channel clears the local state and applies the refreshed participant directory immediately instead of waiting for the next poll.
+- WebRTC cleanup no longer blocks leaving when the swarm throws during close or omits its close callback.
+
 ## 2.4.0 - 2026-09-03
 
 ### Changed
