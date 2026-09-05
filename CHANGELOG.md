@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.4 - 2026-09-05
+
+### Added
+- Participant lists now show whether each user's microphone is enabled or muted, both inside a room and in the voice-channel directory.
+
+### Changed
+- The **Voice channels** heading remains visible while connected, with microphone and speaker controls placed beside the active room name.
+
+### Fixed
+- Speaker output starts enabled when joining a room, and its disabled state uses a slashed loudspeaker icon.
+
 ## 2.4.3 - 2026-09-04
 
 ### Fixed
