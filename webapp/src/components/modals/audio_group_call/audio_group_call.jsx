@@ -51,7 +51,7 @@ async function getMyStream() {
     }
 }
 
-class AudioCallPanel extends React.Component {
+export class AudioCallPanel extends React.Component {
     static propTypes = {
         userId: PropTypes.string.isRequired,
         username: PropTypes.string,
@@ -204,9 +204,11 @@ class AudioCallPanel extends React.Component {
     clearPresence() {
         this.stopPresence();
 
-        // Fire and forget: leaving should not wait on the network, and the
-        // entry expires on its own if this never lands.
-        sendVoicePresence('').catch((err) => debug('clearing voice presence failed', err));
+        // Do not wait for the next directory poll: the endpoint returns the
+        // refreshed room list, so apply it as soon as the departure lands.
+        return sendVoicePresence('').
+            then((rooms) => this.applyRooms(rooms)).
+            catch((err) => debug('clearing voice presence failed', err));
     }
 
     /**
@@ -324,15 +326,15 @@ class AudioCallPanel extends React.Component {
     }
 
     leaveRoomInternal(cb) {
-        this.cleanupConnection(() => {
-            this.connectPending = false;
-            if (this.isUnmounted) {
-                if (typeof cb === 'function') {
-                    cb();
-                }
-                return;
-            }
-            this.clearPresence();
+        this.connectPending = false;
+
+        // Presence and local UI must change immediately. Closing a WebRTC swarm
+        // is asynchronous and its callback may take long enough for the user to
+        // believe they are still in the room.
+        this.clearPresence();
+        this.cleanupConnection(cb);
+
+        if (!this.isUnmounted) {
             this.setState({
                 activeRoom: null,
                 initialized: false,
@@ -341,8 +343,8 @@ class AudioCallPanel extends React.Component {
                 playBacks: {},
                 audioOn: false,
                 speakerOn: false,
-            }, cb);
-        });
+            });
+        }
     }
 
     handleLeaveRoom = (e) => {
@@ -728,9 +730,7 @@ class AudioCallPanel extends React.Component {
                         <ul style={style.roomList}>
                             {channelList.length === 0 && !showCreateInput && (
                                 <li style={style.roomHint}>
-                                    {isSystemAdmin ?
-                                        'No channels yet — create one and everyone on this server will see it.' :
-                                        'No voice channels yet. A system administrator can create one.'}
+                                    {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
                                 </li>
                             )}
                             {channelList.map((r) => (
