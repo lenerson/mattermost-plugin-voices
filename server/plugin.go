@@ -37,6 +37,10 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 	switch r.URL.Path {
 	case "/v1/config":
 		p.handleConfig(w, r)
+	case "/v1/voice/rooms":
+		p.handleVoiceRooms(w, r)
+	case "/v1/voice/presence":
+		p.handleVoicePresence(w, r)
 	case "/v1/signal/publish":
 		p.handleSignalPublish(w, r)
 	case "/v1/signal/stream":
