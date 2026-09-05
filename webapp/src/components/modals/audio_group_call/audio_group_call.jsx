@@ -24,6 +24,10 @@ const DIRECTORY_POLL_MS = 10000;
 // Comfortably inside the server's 45s expiry, so one lost request is harmless.
 const PRESENCE_HEARTBEAT_MS = 15000;
 
+// webrtc-swarm may omit its close callback when already closed, and a broken
+// peer may never emit close. Cleanup must still let the caller make progress.
+export const SWARM_CLOSE_TIMEOUT_MS = 2000;
+
 function genRoomId() {
     return `vr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -291,8 +295,21 @@ export class AudioCallPanel extends React.Component {
     };
 
     cleanupConnection(done) {
-        const finish = typeof done === 'function' ? done : function noopCallback() {
+        const onFinished = typeof done === 'function' ? done : function noopCallback() {
             /* optional async completion */
+        };
+        let finished = false;
+        let closeFallback = null;
+        const finish = () => {
+            if (finished) {
+                return;
+            }
+            finished = true;
+            if (closeFallback) {
+                clearTimeout(closeFallback);
+                closeFallback = null;
+            }
+            onFinished();
         };
 
         Object.values(this.state.playBacks || {}).forEach((aud) => {
@@ -316,9 +333,18 @@ export class AudioCallPanel extends React.Component {
         if (this.swarmInstance) {
             const sw = this.swarmInstance;
             this.swarmInstance = null;
-            sw.close(() => {
+
+            closeFallback = setTimeout(() => {
+                debug('voice swarm close timed out; continuing cleanup');
                 finish();
-            });
+            }, SWARM_CLOSE_TIMEOUT_MS);
+
+            try {
+                sw.close(finish);
+            } catch (e) {
+                debug('voice swarm close failed; continuing cleanup', e);
+                finish();
+            }
             return;
         }
 
@@ -332,18 +358,26 @@ export class AudioCallPanel extends React.Component {
         // is asynchronous and its callback may take long enough for the user to
         // believe they are still in the room.
         this.clearPresence();
-        this.cleanupConnection(cb);
-
-        if (!this.isUnmounted) {
-            this.setState({
-                activeRoom: null,
-                initialized: false,
-                swarmInitialized: false,
-                peerStreams: {},
-                playBacks: {},
-                audioOn: false,
-                speakerOn: false,
-            });
+        try {
+            this.cleanupConnection(cb);
+        } catch (e) {
+            // Keep local departure independent from unexpected cleanup errors.
+            debug('voice connection cleanup failed', e);
+            if (typeof cb === 'function') {
+                cb();
+            }
+        } finally {
+            if (!this.isUnmounted) {
+                this.setState({
+                    activeRoom: null,
+                    initialized: false,
+                    swarmInitialized: false,
+                    peerStreams: {},
+                    playBacks: {},
+                    audioOn: false,
+                    speakerOn: false,
+                });
+            }
         }
     }
 

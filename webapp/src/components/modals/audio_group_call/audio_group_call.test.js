@@ -9,7 +9,7 @@ jest.mock('../../../utils/voiceRoomsApi', () => ({
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
 
-import {AudioCallPanel} from './audio_group_call';
+import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
 
 function captureCleanupCallback(holder) {
     return (callback) => {
@@ -17,7 +17,19 @@ function captureCleanupCallback(holder) {
     };
 }
 
+function throwCloseError() {
+    throw new Error('close failed');
+}
+
+function leaveClosePending() {
+    // Simulates a peer that never emits close.
+}
+
 describe('AudioCallPanel leaving a room', () => {
+    afterEach(() => {
+        jest.useRealTimers();
+    });
+
     test('applies the refreshed directory after clearing presence', async () => {
         const rooms = [{roomId: 'room-1', participants: []}];
         sendVoicePresence.mockResolvedValue(rooms);
@@ -56,6 +68,42 @@ describe('AudioCallPanel leaving a room', () => {
         expect(done).not.toHaveBeenCalled();
 
         cleanup.finish();
+        expect(done).toHaveBeenCalledTimes(1);
+    });
+
+    test('continues cleanup when closing the swarm throws', () => {
+        const done = jest.fn();
+        const panel = {
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(throwCloseError)},
+        };
+
+        let thrownError = null;
+        try {
+            AudioCallPanel.prototype.cleanupConnection.call(panel, done);
+        } catch (error) {
+            thrownError = error;
+        }
+
+        expect(thrownError).toBeNull();
+        expect(panel.swarmInstance).toBeNull();
+        expect(done).toHaveBeenCalledTimes(1);
+    });
+
+    test('continues cleanup when the swarm omits its close callback', () => {
+        jest.useFakeTimers();
+        const done = jest.fn();
+        const panel = {
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(leaveClosePending)},
+        };
+
+        AudioCallPanel.prototype.cleanupConnection.call(panel, done);
+        expect(done).not.toHaveBeenCalled();
+
+        jest.advanceTimersByTime(SWARM_CLOSE_TIMEOUT_MS);
         expect(done).toHaveBeenCalledTimes(1);
     });
 });
