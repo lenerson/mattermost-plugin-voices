@@ -18,14 +18,21 @@ module.exports = {
             buffer: require.resolve('buffer/'),
             util: require.resolve('util/'),
             stream: require.resolve('stream-browserify'),
+            process: require.resolve('process/browser'),
         },
         alias: {
             stream: require.resolve('stream-browserify'),
+            'process/browser': require.resolve('process/browser'),
         },
     },
     plugins: [
         new webpack.ProvidePlugin({
             Buffer: ['buffer', 'Buffer'],
+
+            // webpack 5 dropped the automatic node polyfills; readable-stream (via
+            // through2 / webrtc-swarm) reads process.browser and process.version at
+            // module scope, which throws before window.registerPlugin ever runs.
+            process: 'process/browser',
         }),
     ],
     devtool: 'inline-source-map',
