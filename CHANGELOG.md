@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.8 - 2026-09-05
+
+### Added
+- Voice rooms now play distinct short tones when a participant joins or leaves, for both the participant and people already in the room.
+
+### Changed
+- The listening control now uses headphones and a slash when disabled. Disabling listening also disables the microphone; reenabling listening leaves the microphone muted.
+
+### Fixed
+- Removed redundant connected and muted status messages from active rooms.
+- Voice-channel occupancy and microphone state now refresh immediately through Mattermost WebSocket events, with polling retained as a fallback.
+
 ## 2.4.7 - 2026-09-05
 
 ### Fixed
