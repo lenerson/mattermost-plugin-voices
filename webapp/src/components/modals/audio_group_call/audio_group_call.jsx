@@ -959,7 +959,7 @@ export class AudioCallPanel extends React.Component {
                                         aria-label='Leave voice channel'
                                     >
                                         <i
-                                            className='icon fa fa-phone'
+                                            className='fa fa-phone'
                                             style={style.hangupIcon}
                                             aria-hidden='true'
                                         />
@@ -1252,13 +1252,21 @@ const getStyle = () => ({
         padding: 0,
         borderRadius: '50%',
         border: 'none',
-        background: '#d24b4b',
-        color: '#fff',
+        background: 'rgba(210, 75, 75, 0.35)',
+        color: '#ffb4b4',
         cursor: 'pointer',
+        lineHeight: 1,
     },
     hangupIcon: {
-        display: 'inline-block',
+        display: 'block',
+        width: 14,
+        height: 14,
+        margin: 0,
+        fontSize: 14,
+        lineHeight: '14px',
+        textAlign: 'center',
         transform: 'rotate(135deg)',
+        transformOrigin: '50% 50%',
     },
     hint: {
         margin: '0 10px 8px',

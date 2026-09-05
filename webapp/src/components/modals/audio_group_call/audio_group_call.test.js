@@ -167,7 +167,11 @@ describe('AudioCallPanel room directory', () => {
         expect(findElements(rendered, hasText('Delete'))).toHaveLength(0);
 
         const hangupControl = findElements(rendered, hasAriaLabel('Leave voice channel'))[0];
-        const hangupIcon = findElements(hangupControl, hasClassName('icon fa fa-phone'))[0];
+        expect(hangupControl.props.style.background).toBe('rgba(210, 75, 75, 0.35)');
+        expect(hangupControl.props.style.color).toBe('#ffb4b4');
+        const hangupIcon = findElements(hangupControl, hasClassName('fa fa-phone'))[0];
+        expect(hangupIcon.props.style.width).toBe(14);
+        expect(hangupIcon.props.style.height).toBe(14);
         expect(hangupIcon.props.style.transform).toBe('rotate(135deg)');
     });
 });
