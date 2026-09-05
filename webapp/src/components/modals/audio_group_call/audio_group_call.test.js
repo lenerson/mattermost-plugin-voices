@@ -169,6 +169,9 @@ describe('AudioCallPanel room directory', () => {
         const hangupControl = findElements(rendered, hasAriaLabel('Leave voice channel'))[0];
         expect(hangupControl.props.style.background).toBe('rgba(210, 75, 75, 0.35)');
         expect(hangupControl.props.style.color).toBe('#ffb4b4');
+        expect(hangupControl.props.style.width).toBe(26);
+        expect(hangupControl.props.style.height).toBe(26);
+        expect(hangupControl.props.style.borderRadius).toBe(4);
         const hangupIcon = findElements(hangupControl, hasClassName('fa fa-phone'))[0];
         expect(hangupIcon.props.style.width).toBe(14);
         expect(hangupIcon.props.style.height).toBe(14);
