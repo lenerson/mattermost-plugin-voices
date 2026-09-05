@@ -792,11 +792,9 @@ export class AudioCallPanel extends React.Component {
         const {isSystemAdmin} = this.props;
         const selfName = this.props.displayName || 'You';
 
-        let connectionHint = 'Connecting…';
-        if (swarmInitialized) {
-            connectionHint = audioOn ? 'You are connected. Others can hear you.' : 'You are connected, with your microphone muted.';
-        } else if (initialized && !audioEnabled) {
-            connectionHint = 'No microphone available — you can listen, but not speak.';
+        let connectionHint = '';
+        if (!swarmInitialized) {
+            connectionHint = initialized && !audioEnabled ? 'No microphone available — you can listen, but not speak.' : 'Connecting…';
         }
 
         if (activeRoom && audioOn && !initialized) {
@@ -966,7 +964,7 @@ export class AudioCallPanel extends React.Component {
                                     </button>
                                 </span>
                             </div>
-                            <p style={style.hint}>{connectionHint}</p>
+                            {connectionHint && <p style={style.hint}>{connectionHint}</p>}
                             {this.renderRoster([
                                 ...(swarmInitialized ? [{key: 'self', name: selfName, audioOn: Boolean(audioOn && audioEnabled)}] : []),
                                 ...Object.keys(peerStreams).map((id) => ({

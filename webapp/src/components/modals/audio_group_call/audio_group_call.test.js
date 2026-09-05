@@ -176,6 +176,16 @@ describe('AudioCallPanel room directory', () => {
         expect(hangupIcon.props.style.width).toBe(14);
         expect(hangupIcon.props.style.height).toBe(14);
         expect(hangupIcon.props.style.transform).toBe('rotate(135deg)');
+
+        panel.state.initialized = true;
+        panel.state.swarmInitialized = true;
+        panel.state.audioOn = true;
+        rendered = panel.render();
+        expect(findElements(rendered, hasText('You are connected. Others can hear you.'))).toHaveLength(0);
+
+        panel.state.audioOn = false;
+        rendered = panel.render();
+        expect(findElements(rendered, hasText('You are connected, with your microphone muted.'))).toHaveLength(0);
     });
 });
 
