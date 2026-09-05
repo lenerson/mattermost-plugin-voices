@@ -43,6 +43,14 @@ function findElements(node, predicate, matches = []) {
     return matches;
 }
 
+function hasAriaLabel(label) {
+    return (element) => element.props && element.props['aria-label'] === label;
+}
+
+function hasClassName(className) {
+    return (element) => element.props && element.props.className === className;
+}
+
 describe('AudioCallPanel room directory', () => {
     test('joins when the room name row is selected without rendering a separate Join button', () => {
         const panel = new AudioCallPanel({
@@ -67,6 +75,7 @@ describe('AudioCallPanel room directory', () => {
         expect(panel.setState).toHaveBeenCalledWith(expect.objectContaining({
             activeRoom: {roomId: 'room-1', name: 'Standup'},
             audioOn: true,
+            speakerOn: true,
         }));
         expect(panel.startPresence).toHaveBeenCalledWith('room-1');
     });
@@ -125,6 +134,49 @@ describe('AudioCallPanel room directory', () => {
         expect(panel.handleDeleteRoom).toHaveBeenCalledWith('room-1');
         expect(deleteHandler).toHaveBeenCalledWith(deleteEvent);
         expect(panel.state.openRoomMenuId).toBeNull();
+    });
+});
+
+describe('AudioCallPanel speaker control', () => {
+    test('starts enabled and uses a slashed loudspeaker only while disabled', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+
+        expect(panel.state.speakerOn).toBe(true);
+
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.speakerOn = false;
+        let rendered = panel.render();
+        const disabledControl = findElements(rendered, hasAriaLabel('Enable voice channel audio'))[0];
+
+        expect(findElements(disabledControl, hasClassName('icon fa fa-volume-up fa-lg'))).toHaveLength(1);
+        expect(findElements(disabledControl, hasClassName('voice-channel-speaker-slash'))).toHaveLength(1);
+
+        panel.state.speakerOn = true;
+        rendered = panel.render();
+        const enabledControl = findElements(rendered, hasAriaLabel('Disable voice channel audio'))[0];
+
+        expect(findElements(enabledControl, hasClassName('icon fa fa-volume-up fa-lg'))).toHaveLength(1);
+        expect(findElements(enabledControl, hasClassName('voice-channel-speaker-slash'))).toHaveLength(0);
+    });
+
+    test('mutes existing remote playbacks when disabled', () => {
+        const playback = {muted: false};
+        const panel = {
+            state: {
+                playBacks: {peer: playback},
+                speakerOn: true,
+            },
+            setState: jest.fn(),
+        };
+
+        AudioCallPanel.prototype.handleSpeakerToggle.call(panel);
+
+        expect(playback.muted).toBe(true);
+        expect(panel.setState).toHaveBeenCalledWith({speakerOn: false});
     });
 });
 

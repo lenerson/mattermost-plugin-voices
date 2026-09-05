@@ -107,7 +107,7 @@ export class AudioCallPanel extends React.Component {
             videoOn: false,
             audioEnabled: true,
             videoEnabled: false,
-            speakerOn: false,
+            speakerOn: true,
             stunServer,
             turnServer,
             turnServerUsername,
@@ -443,6 +443,7 @@ export class AudioCallPanel extends React.Component {
                 peerStreams: {},
                 playBacks: {},
                 audioOn: true,
+                speakerOn: true,
                 audioEnabled: true,
                 videoEnabled: false,
                 hoveredRoomId: null,
@@ -613,8 +614,8 @@ export class AudioCallPanel extends React.Component {
             const aud = document.createElement('audio');
             aud.srcObject = stream;
             playBacks[id] = aud;
-            aud.play();
             aud.muted = !this.state.speakerOn;
+            aud.play();
             this.setState({playBacks});
         });
 
@@ -913,14 +914,27 @@ export class AudioCallPanel extends React.Component {
                                 tabIndex={0}
                                 onKeyDown={(ev) => ev.key === 'Enter' && this.handleAudioToggle()}
                             />
-                            <i
-                                className={speakerOn ? 'icon fa fa-volume-up fa-lg' : 'icon fa fa-volume-off fa-lg'}
-                                style={style.button}
+                            <button
+                                type='button'
+                                style={style.speakerButton}
                                 onClick={this.handleSpeakerToggle.bind(this)}
-                                role='button'
-                                tabIndex={0}
-                                onKeyDown={(ev) => ev.key === 'Enter' && this.handleSpeakerToggle()}
-                            />
+                                title={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
+                                aria-label={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
+                            >
+                                <span style={style.speakerIcon}>
+                                    <i
+                                        className='icon fa fa-volume-up fa-lg'
+                                        aria-hidden='true'
+                                    />
+                                    {!speakerOn && (
+                                        <span
+                                            className='voice-channel-speaker-slash'
+                                            style={style.speakerSlash}
+                                            aria-hidden='true'
+                                        />
+                                    )}
+                                </span>
+                            </button>
                         </div>
                         <p style={style.hint}>{connectionHint}</p>
                         {this.renderRoster([
@@ -1203,6 +1217,38 @@ const getStyle = () => ({
         flexGrow: '1',
         padding: '3px',
         cursor: 'pointer',
+    },
+    speakerButton: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexGrow: 1,
+        margin: '5px',
+        padding: '3px',
+        border: 'none',
+        background: 'transparent',
+        color: 'white',
+        cursor: 'pointer',
+    },
+    speakerIcon: {
+        position: 'relative',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 20,
+        height: 18,
+    },
+    speakerSlash: {
+        position: 'absolute',
+        left: 0,
+        top: '50%',
+        width: '20px',
+        height: '2px',
+        borderRadius: '1px',
+        background: 'currentColor',
+        transform: 'rotate(-45deg)',
+        transformOrigin: 'center',
+        pointerEvents: 'none',
     },
     flexContainer: {
         display: 'flex',
