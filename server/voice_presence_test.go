@@ -96,6 +96,34 @@ func TestVoicePresenceCarriesMicrophoneState(t *testing.T) {
 	assert.True(t, rooms[0].Participants[0].AudioOn)
 }
 
+func TestVoicePresencePublishesOnlyMeaningfulChanges(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
+
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	require.Len(t, kv.webSocketEvents, 1)
+	assert.Equal(t, voicePresenceEvent, kv.webSocketEvents[0])
+	assert.Equal(t, map[string]interface{}{
+		"userId":         "talker",
+		"previousRoomId": "",
+		"roomId":         "room-1",
+		"audioOn":        true,
+	}, kv.webSocketPayloads[0])
+
+	// Routine heartbeats should not make every connected client refetch.
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	require.Len(t, kv.webSocketEvents, 1)
+
+	require.Equal(t, http.StatusOK, heartbeatWithAudio(p, "talker", "room-1", false).Code)
+	require.Len(t, kv.webSocketEvents, 2)
+	assert.Equal(t, false, kv.webSocketPayloads[1]["audioOn"])
+
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "").Code)
+	require.Len(t, kv.webSocketEvents, 3)
+	assert.Equal(t, "room-1", kv.webSocketPayloads[2]["previousRoomId"])
+	assert.Equal(t, "", kv.webSocketPayloads[2]["roomId"])
+}
+
 func TestVoicePresenceListsEveryoneInTheRoom(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin()
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)

@@ -20,6 +20,8 @@ const (
 	voicePresenceTTLMillis = 45 * 1000
 
 	maxVoicePresencePerRoom = 100
+
+	voicePresenceEvent = "voice_presence"
 )
 
 // voicePresenceEntry carries both expiry and the microphone state advertised
@@ -151,7 +153,8 @@ func (p *Plugin) participantsFor(users map[string]voicePresenceEntry) []particip
 }
 
 // handleVoicePresence records that the caller is in a room, or in none.
-// A heartbeat is a POST with {roomId}; leaving is the same call with it empty.
+// A heartbeat is a POST with {roomId, audioOn}; leaving is the same call with
+// roomId empty.
 func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 	if !p.isUserAuthenticated(r) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
@@ -183,11 +186,25 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 		audioOn = *body.AudioOn
 	}
 
+	previousRoomID := ""
+	previousAudioOn := false
+	hadPreviousPresence := false
 	_, err := p.mutateVoicePresence(func(presence voicePresence) error {
+		// mutateVoicePresence can retry after a compare-and-set conflict. Reset
+		// these values so the event below describes the successful attempt.
+		previousRoomID = ""
+		previousAudioOn = false
+		hadPreviousPresence = false
+
 		// One room at a time: a heartbeat for a new room is also a departure
 		// from the previous one, which is what a reconnect or a second tab
 		// would otherwise leave behind.
 		for existing, users := range presence {
+			if entry, ok := users[userID]; ok {
+				previousRoomID = existing
+				previousAudioOn = entry.AudioOn
+				hadPreviousPresence = true
+			}
 			if existing != roomID {
 				delete(users, userID)
 			}
@@ -219,6 +236,17 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, err.Error(), status)
 		return
+	}
+
+	membershipChanged := previousRoomID != roomID
+	microphoneChanged := hadPreviousPresence && roomID != "" && previousRoomID == roomID && previousAudioOn != audioOn
+	if membershipChanged || microphoneChanged {
+		p.API.PublishWebSocketEvent(voicePresenceEvent, map[string]interface{}{
+			"userId":         userID,
+			"previousRoomId": previousRoomID,
+			"roomId":         roomID,
+			"audioOn":        audioOn,
+		}, &model.WebsocketBroadcast{})
 	}
 
 	p.handleVoiceRoomsList(w)

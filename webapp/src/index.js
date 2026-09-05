@@ -15,6 +15,7 @@ import {loadConfig, makeVideoCall, openVideoCallPicker} from './actions';
 import {getDirectMessagePeerUserId} from './utils/dmPeer';
 import {withErrorBoundary} from './components/with_error_boundary';
 import debug from './utils/debug';
+import {registerVoicePresenceEvents} from './utils/voicePresenceEvents';
 
 /**
  * Each registration is isolated: a registry method this server version does not
@@ -153,6 +154,8 @@ export default class Plugin {
             WEBRTC_INVITE_POST_TYPE,
             withErrorBoundary(WebrtcInvitePost, 'webrtc_invite_post'),
         ));
+
+        safely('registerWebSocketEventHandler(voice_presence)', () => registerVoicePresenceEvents(registry));
 
         safely('loadConfig', () => whenStoreReady(store, () => {
             loadConfig()(store.dispatch, store.getState);

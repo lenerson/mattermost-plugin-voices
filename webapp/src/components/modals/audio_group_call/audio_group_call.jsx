@@ -12,12 +12,12 @@ import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
 import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {id as pluginId} from 'manifest';
 
 /*
- * The directory is server state and nothing pushes changes, so the panel polls.
- * It carries occupancy now, which people expect to move in something close to
- * real time, hence the shorter interval than a room list alone would need.
+ * Presence changes arrive over the Mattermost websocket. Polling remains as a
+ * fallback for reconnects, proxies that interrupt events, and expired clients.
  */
 const DIRECTORY_POLL_MS = 10000;
 
@@ -129,11 +129,13 @@ export class AudioCallPanel extends React.Component {
         this.currentMyStream = null;
         this.connectPending = false;
         this.isUnmounted = false;
+        this.unsubscribeDirectoryEvents = null;
     }
 
     componentDidMount() {
         // The directory no longer depends on the client config: it is a plugin
         // endpoint of its own, so it loads even before /v1/config comes back.
+        this.startDirectoryEvents();
         this.bootstrapDirectory();
     }
 
@@ -143,6 +145,7 @@ export class AudioCallPanel extends React.Component {
         this.cleanupConnection(() => {
             /* sync teardown */
         });
+        this.stopDirectoryEvents();
         this.stopDirectory();
     }
 
@@ -167,6 +170,19 @@ export class AudioCallPanel extends React.Component {
         return fetchVoiceRooms().
             then((rooms) => this.applyRooms(rooms)).
             catch((err) => this.reportDirectoryError('Could not load the voice channels.', err));
+    }
+
+    startDirectoryEvents() {
+        if (!this.unsubscribeDirectoryEvents) {
+            this.unsubscribeDirectoryEvents = subscribeVoicePresenceChanges(() => this.refreshRooms());
+        }
+    }
+
+    stopDirectoryEvents() {
+        if (this.unsubscribeDirectoryEvents) {
+            this.unsubscribeDirectoryEvents();
+            this.unsubscribeDirectoryEvents = null;
+        }
     }
 
     bootstrapDirectory() {

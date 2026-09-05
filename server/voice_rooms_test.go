@@ -18,7 +18,9 @@ import (
 // fakeKV backs the plugintest API with a store that honours compare-and-set, so
 // the retry path in mutateVoiceRooms runs for real instead of being stubbed out.
 type fakeKV struct {
-	values map[string][]byte
+	values            map[string][]byte
+	webSocketEvents   []string
+	webSocketPayloads []map[string]interface{}
 }
 
 // Creating a voice channel is a system-admin action, so the fixture's creator
@@ -65,6 +67,10 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 	)
 
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything).Maybe()
+	api.On("PublishWebSocketEvent", mock.AnythingOfType("string"), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		kv.webSocketEvents = append(kv.webSocketEvents, args.String(0))
+		kv.webSocketPayloads = append(kv.webSocketPayloads, args.Get(1).(map[string]interface{}))
+	}).Maybe()
 
 	// Presence resolves names through the server so a viewer who never opened
 	// the room can still see who is in it.

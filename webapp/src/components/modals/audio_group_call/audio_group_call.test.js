@@ -8,6 +8,7 @@ jest.mock('../../../utils/voiceRoomsApi', () => ({
 }));
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
 
@@ -60,6 +61,23 @@ function hasRoleAndAriaLabel(role, label) {
 }
 
 describe('AudioCallPanel room directory', () => {
+    test('refreshes the directory immediately when presence changes', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.refreshRooms = jest.fn();
+
+        panel.startDirectoryEvents();
+        emitVoicePresenceChange({roomId: 'room-1'});
+        expect(panel.refreshRooms).toHaveBeenCalledTimes(1);
+
+        panel.stopDirectoryEvents();
+        emitVoicePresenceChange({roomId: 'room-2'});
+        expect(panel.refreshRooms).toHaveBeenCalledTimes(1);
+    });
+
     test('joins when the room name row is selected without rendering a separate Join button', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
