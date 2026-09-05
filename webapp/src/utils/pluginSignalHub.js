@@ -8,6 +8,8 @@ import {Readable} from 'stream';
 
 import {id as pluginId} from 'manifest';
 
+import debug from './debug';
+
 /**
  * Mattermost sets Mattermost-User-Id on plugin requests only after CSRF passes for cookie auth POSTs.
  * Match mattermost-redux Client4#getOptions (MMCSRF cookie + X-Requested-With).
@@ -77,8 +79,15 @@ function createSubscribeStream(topic) {
     };
 
     es.onerror = () => {
+        /*
+         * Do NOT end the stream here. EventSource reconnects on its own, but a
+         * Readable that has been pushed null is finished for good — so the first
+         * proxy timeout on an idle topic used to detach every data handler for
+         * the rest of the session, silently. That is how an incoming call could
+         * stop being announced after the tab had been sitting there a while.
+         */
         fireOpen();
-        stream.push(null);
+        debug(`[signal] stream interrupted on ${topic}; EventSource will retry`);
     };
 
     const origDestroy = stream.destroy.bind(stream);
