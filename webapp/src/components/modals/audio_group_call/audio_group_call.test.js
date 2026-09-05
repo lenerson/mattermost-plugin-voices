@@ -6,9 +6,14 @@ jest.mock('../../../utils/voiceRoomsApi', () => ({
     fetchVoiceRooms: jest.fn(),
     sendVoicePresence: jest.fn(),
 }));
+jest.mock('../../../utils/voiceRoomSounds', () => ({
+    playVoiceRoomJoinSound: jest.fn(),
+    playVoiceRoomLeaveSound: jest.fn(),
+}));
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
+import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
 
@@ -204,6 +209,49 @@ describe('AudioCallPanel room directory', () => {
         panel.state.audioOn = false;
         rendered = panel.render();
         expect(findElements(rendered, hasText('You are connected, with your microphone muted.'))).toHaveLength(0);
+    });
+});
+
+describe('AudioCallPanel room sounds', () => {
+    beforeEach(() => {
+        playVoiceRoomJoinSound.mockClear();
+        playVoiceRoomLeaveSound.mockClear();
+    });
+
+    test('plays join and leave sounds for the current user and room peers', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+
+        panel.handlePresenceSound({userId: 'user-2', previousRoomId: '', roomId: 'room-1'});
+        panel.handlePresenceSound({userId: 'user-3', previousRoomId: 'room-1', roomId: ''});
+        expect(playVoiceRoomJoinSound).toHaveBeenCalledTimes(1);
+        expect(playVoiceRoomLeaveSound).toHaveBeenCalledTimes(1);
+
+        panel.state.activeRoom = null;
+        panel.handlePresenceSound({userId: 'user-1', previousRoomId: 'room-1', roomId: ''});
+        panel.handlePresenceSound({userId: 'user-1', previousRoomId: '', roomId: 'room-1'});
+        expect(playVoiceRoomJoinSound).toHaveBeenCalledTimes(2);
+        expect(playVoiceRoomLeaveSound).toHaveBeenCalledTimes(2);
+    });
+
+    test('does not play sounds for microphone changes or unrelated rooms', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+
+        panel.handlePresenceSound({userId: 'user-2', previousRoomId: 'room-1', roomId: 'room-1', audioOn: false});
+        panel.handlePresenceSound({userId: 'user-3', previousRoomId: '', roomId: 'room-2'});
+        panel.handlePresenceSound({userId: 'user-4', previousRoomId: 'room-2', roomId: ''});
+
+        expect(playVoiceRoomJoinSound).not.toHaveBeenCalled();
+        expect(playVoiceRoomLeaveSound).not.toHaveBeenCalled();
     });
 });
 

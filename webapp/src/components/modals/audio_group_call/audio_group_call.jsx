@@ -13,6 +13,7 @@ import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
 import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} from '../../../utils/voiceRoomsApi';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
+import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -174,7 +175,10 @@ export class AudioCallPanel extends React.Component {
 
     startDirectoryEvents() {
         if (!this.unsubscribeDirectoryEvents) {
-            this.unsubscribeDirectoryEvents = subscribeVoicePresenceChanges(() => this.refreshRooms());
+            this.unsubscribeDirectoryEvents = subscribeVoicePresenceChanges((change) => {
+                this.handlePresenceSound(change);
+                this.refreshRooms();
+            });
         }
     }
 
@@ -182,6 +186,20 @@ export class AudioCallPanel extends React.Component {
         if (this.unsubscribeDirectoryEvents) {
             this.unsubscribeDirectoryEvents();
             this.unsubscribeDirectoryEvents = null;
+        }
+    }
+
+    handlePresenceSound(change) {
+        const {activeRoom} = this.state;
+        const isCurrentUser = change.userId === this.props.userId;
+        const joinedRoomID = change.roomId && change.roomId !== change.previousRoomId ? change.roomId : '';
+        const leftRoomID = change.previousRoomId && change.previousRoomId !== change.roomId ? change.previousRoomId : '';
+
+        if (joinedRoomID && (isCurrentUser || (activeRoom && activeRoom.roomId === joinedRoomID))) {
+            playVoiceRoomJoinSound();
+        }
+        if (leftRoomID && (isCurrentUser || (activeRoom && activeRoom.roomId === leftRoomID))) {
+            playVoiceRoomLeaveSound();
         }
     }
 
