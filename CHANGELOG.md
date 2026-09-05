@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.6 - 2026-09-05
+
+### Fixed
+- The phone-hangup control is now centered and uses the softer translucent red styling from the former channel-delete button.
+
 ## 2.4.5 - 2026-09-05
 
 ### Changed
