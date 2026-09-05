@@ -689,22 +689,27 @@ export class AudioCallPanel extends React.Component {
         }
     }
 
-    handleAudioToggle() {
-        const {peerStreams, audioOn} = this.state;
+    updateMicrophoneTransmission(enabled) {
+        const {peerStreams} = this.state;
         if (this.currentMyStream) {
             const tracks = this.currentMyStream.getAudioTracks();
             if (tracks[0]) {
-                tracks[0].enabled = !audioOn;
-            }
-
-            for (const pid of Object.keys(peerStreams)) {
-                const peerStream = peerStreams[pid];
-                if (peerStream.connected && peerStream.peer) {
-                    peerStream.peer.send(JSON.stringify({type: 'audioToggle', enabled: !audioOn}));
-                }
+                tracks[0].enabled = enabled;
             }
         }
-        this.setState({audioOn: !audioOn}, () => {
+
+        for (const pid of Object.keys(peerStreams)) {
+            const peerStream = peerStreams[pid];
+            if (peerStream.connected && peerStream.peer) {
+                peerStream.peer.send(JSON.stringify({type: 'audioToggle', enabled}));
+            }
+        }
+    }
+
+    handleAudioToggle() {
+        const microphoneOn = !this.state.audioOn;
+        this.updateMicrophoneTransmission(microphoneOn);
+        this.setState({audioOn: microphoneOn}, () => {
             if (this.state.activeRoom) {
                 this.announcePresence(this.state.activeRoom.roomId);
             }
@@ -713,16 +718,27 @@ export class AudioCallPanel extends React.Component {
 
     handleSpeakerToggle() {
         debug('Handle Speaker Toggle');
-        const {playBacks, speakerOn} = this.state;
+        const {playBacks, speakerOn, audioOn} = this.state;
+        const speakerWillBeOn = !speakerOn;
+        const microphoneWillBeDisabled = speakerOn && audioOn;
 
         for (const id of Object.keys(playBacks)) {
             const aud = playBacks[id];
-            aud.muted = speakerOn;
-            debug(id, 'Speaker On', aud.muted);
+            aud.muted = !speakerWillBeOn;
+            debug(id, 'Speaker On', speakerWillBeOn);
+        }
+
+        if (microphoneWillBeDisabled) {
+            this.updateMicrophoneTransmission(false);
         }
 
         this.setState({
-            speakerOn: !speakerOn,
+            speakerOn: speakerWillBeOn,
+            ...(microphoneWillBeDisabled ? {audioOn: false} : {}),
+        }, () => {
+            if (microphoneWillBeDisabled && this.state.activeRoom) {
+                this.announcePresence(this.state.activeRoom.roomId);
+            }
         });
     }
 
@@ -751,15 +767,15 @@ export class AudioCallPanel extends React.Component {
                     title={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
                     aria-label={speakerOn ? 'Disable voice channel audio' : 'Enable voice channel audio'}
                 >
-                    <span style={style.speakerIcon}>
+                    <span style={style.headphonesIcon}>
                         <i
-                            className='icon fa fa-volume-up fa-lg'
+                            className='icon fa fa-headphones fa-lg'
                             aria-hidden='true'
                         />
                         {!speakerOn && (
                             <span
-                                className='voice-channel-speaker-slash'
-                                style={style.speakerSlash}
+                                className='voice-channel-headphones-slash'
+                                style={style.headphonesSlash}
                                 aria-hidden='true'
                             />
                         )}
@@ -1272,7 +1288,7 @@ const getStyle = () => ({
         color: 'rgba(255,255,255,0.45)',
         lineHeight: 1.3,
     },
-    speakerIcon: {
+    headphonesIcon: {
         position: 'relative',
         display: 'inline-flex',
         alignItems: 'center',
@@ -1280,7 +1296,7 @@ const getStyle = () => ({
         width: 20,
         height: 18,
     },
-    speakerSlash: {
+    headphonesSlash: {
         position: 'absolute',
         left: 0,
         top: '50%',

@@ -190,7 +190,7 @@ describe('AudioCallPanel room directory', () => {
 });
 
 describe('AudioCallPanel speaker control', () => {
-    test('starts enabled and uses a slashed loudspeaker only while disabled', () => {
+    test('starts enabled and uses slashed headphones only while disabled', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
@@ -204,31 +204,60 @@ describe('AudioCallPanel speaker control', () => {
         let rendered = panel.render();
         const disabledControl = findElements(rendered, hasAriaLabel('Enable voice channel audio'))[0];
 
-        expect(findElements(disabledControl, hasClassName('icon fa fa-volume-up fa-lg'))).toHaveLength(1);
-        expect(findElements(disabledControl, hasClassName('voice-channel-speaker-slash'))).toHaveLength(1);
+        expect(findElements(disabledControl, hasClassName('icon fa fa-headphones fa-lg'))).toHaveLength(1);
+        expect(findElements(disabledControl, hasClassName('voice-channel-headphones-slash'))).toHaveLength(1);
 
         panel.state.speakerOn = true;
         rendered = panel.render();
         const enabledControl = findElements(rendered, hasAriaLabel('Disable voice channel audio'))[0];
 
-        expect(findElements(enabledControl, hasClassName('icon fa fa-volume-up fa-lg'))).toHaveLength(1);
-        expect(findElements(enabledControl, hasClassName('voice-channel-speaker-slash'))).toHaveLength(0);
+        expect(findElements(enabledControl, hasClassName('icon fa fa-headphones fa-lg'))).toHaveLength(1);
+        expect(findElements(enabledControl, hasClassName('voice-channel-headphones-slash'))).toHaveLength(0);
     });
 
-    test('mutes existing remote playbacks when disabled', () => {
+    test('disabling listening also disables the microphone, while reenabling restores only listening', () => {
         const playback = {muted: false};
-        const panel = {
-            state: {
-                playBacks: {peer: playback},
-                speakerOn: true,
-            },
-            setState: jest.fn(),
+        const audioTrack = {enabled: true};
+        const peer = {send: jest.fn()};
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state = {
+            ...panel.state,
+            activeRoom: {roomId: 'room-1', name: 'Standup'},
+            playBacks: {peer: playback},
+            peerStreams: {peer: {connected: true, peer}},
+            speakerOn: true,
+            audioOn: true,
+        };
+        panel.currentMyStream = {getAudioTracks: () => [audioTrack]};
+        panel.announcePresence = jest.fn();
+        panel.setState = (update, callback) => {
+            panel.state = {...panel.state, ...update};
+            if (callback) {
+                callback();
+            }
         };
 
-        AudioCallPanel.prototype.handleSpeakerToggle.call(panel);
+        panel.handleSpeakerToggle();
 
         expect(playback.muted).toBe(true);
-        expect(panel.setState).toHaveBeenCalledWith({speakerOn: false});
+        expect(audioTrack.enabled).toBe(false);
+        expect(peer.send).toHaveBeenCalledWith(JSON.stringify({type: 'audioToggle', enabled: false}));
+        expect(panel.state).toEqual(expect.objectContaining({speakerOn: false, audioOn: false}));
+        expect(panel.announcePresence).toHaveBeenCalledWith('room-1');
+
+        peer.send.mockClear();
+        panel.announcePresence.mockClear();
+        panel.handleSpeakerToggle();
+
+        expect(playback.muted).toBe(false);
+        expect(audioTrack.enabled).toBe(false);
+        expect(peer.send).not.toHaveBeenCalled();
+        expect(panel.state).toEqual(expect.objectContaining({speakerOn: true, audioOn: false}));
+        expect(panel.announcePresence).not.toHaveBeenCalled();
     });
 });
 
