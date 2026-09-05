@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.9 - 2026-09-05
+
+### Changed
+- The complete voice-channel directory remains visible while connected, including participant microphone states and room settings.
+- Selecting another channel now fully closes the current WebRTC connection before joining the new channel.
+
+### Fixed
+- Moving the same user from another browser tab disconnects the previous tab, preventing simultaneous connections to multiple voice channels.
+
 ## 2.4.8 - 2026-09-05
 
 ### Added
