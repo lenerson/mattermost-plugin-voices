@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.2 - 2026-09-04
+
+### Changed
+- Channel deletion now lives in a contextual settings menu. Authorized users see a gear while hovering or focusing a voice-channel row and can select **Delete** from its popup menu.
+
 ## 2.4.1 - 2026-09-04
 
 ### Changed
