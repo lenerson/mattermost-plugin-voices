@@ -791,7 +791,6 @@ export class AudioCallPanel extends React.Component {
 
         const {isSystemAdmin} = this.props;
         const selfName = this.props.displayName || 'You';
-        const currentRoom = activeRoom && channelList.find((room) => room.roomId === activeRoom.roomId);
 
         let connectionHint = 'Connecting…';
         if (swarmInitialized) {
@@ -952,23 +951,18 @@ export class AudioCallPanel extends React.Component {
                                     {this.renderVoiceControls()}
                                 </span>
                                 <span style={style.inRoomHeaderActions}>
-                                    {currentRoom && this.canDeleteRoom(currentRoom) && (
-                                        <button
-                                            type='button'
-                                            style={style.deleteChannelBtn}
-                                            onClick={this.handleDeleteRoom(activeRoom.roomId)}
-                                            title='Delete this voice channel for everyone and leave'
-                                        >
-                                            {'Delete'}
-                                        </button>
-                                    )}
                                     <button
                                         type='button'
-                                        style={style.leaveBtn}
+                                        style={style.hangupBtn}
                                         onClick={this.handleLeaveRoom}
                                         title='Leave voice channel'
+                                        aria-label='Leave voice channel'
                                     >
-                                        {'Leave'}
+                                        <i
+                                            className='icon fa fa-phone'
+                                            style={style.hangupIcon}
+                                            aria-hidden='true'
+                                        />
                                     </button>
                                 </span>
                             </div>
@@ -1249,26 +1243,22 @@ const getStyle = () => ({
         gap: 8,
         flexShrink: 0,
     },
-    deleteChannelBtn: {
-        padding: '4px 10px',
-        borderRadius: 4,
+    hangupBtn: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 28,
+        height: 28,
+        padding: 0,
+        borderRadius: '50%',
         border: 'none',
-        background: 'rgba(210, 75, 75, 0.45)',
+        background: '#d24b4b',
         color: '#fff',
         cursor: 'pointer',
-        fontSize: '0.82em',
-        fontWeight: 600,
-        fontFamily: 'inherit',
     },
-    leaveBtn: {
-        padding: '4px 10px',
-        borderRadius: 4,
-        border: '1px solid rgba(255,255,255,0.25)',
-        background: 'transparent',
-        color: 'rgba(255,255,255,0.9)',
-        cursor: 'pointer',
-        fontSize: '0.82em',
-        fontFamily: 'inherit',
+    hangupIcon: {
+        display: 'inline-block',
+        transform: 'rotate(135deg)',
     },
     hint: {
         margin: '0 10px 8px',

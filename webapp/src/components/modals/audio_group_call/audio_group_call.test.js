@@ -148,7 +148,7 @@ describe('AudioCallPanel room directory', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
-            isSystemAdmin: false,
+            isSystemAdmin: true,
         });
 
         let rendered = panel.render();
@@ -156,6 +156,7 @@ describe('AudioCallPanel room directory', () => {
         expect(findElements(rendered, hasAriaLabel('Enable microphone'))).toHaveLength(0);
 
         panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.channelList = [{roomId: 'room-1', name: 'Standup', creatorId: 'user-1', participants: []}];
         panel.state.audioOn = false;
         rendered = panel.render();
 
@@ -163,6 +164,11 @@ describe('AudioCallPanel room directory', () => {
         const activeHeader = findElements(rendered, hasRoleAndAriaLabel('group', 'Voice channel Standup controls'))[0];
         expect(findElements(activeHeader, hasAriaLabel('Enable microphone'))).toHaveLength(1);
         expect(findElements(activeHeader, hasAriaLabel('Disable voice channel audio'))).toHaveLength(1);
+        expect(findElements(rendered, hasText('Delete'))).toHaveLength(0);
+
+        const hangupControl = findElements(rendered, hasAriaLabel('Leave voice channel'))[0];
+        const hangupIcon = findElements(hangupControl, hasClassName('icon fa fa-phone'))[0];
+        expect(hangupIcon.props.style.transform).toBe('rotate(135deg)');
     });
 });
 
