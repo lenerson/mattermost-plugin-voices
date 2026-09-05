@@ -10,10 +10,19 @@ import swarm from 'webrtc-swarm';
 import pluginSignalHub from '../../../utils/pluginSignalHub';
 import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
+import {userDisplayName} from '../../../utils/dmPickerPeers';
+import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} from '../../../utils/voiceRoomsApi';
 import {id as pluginId} from 'manifest';
 
-const DIRECTORY_CHANNEL = 'voice-room-announce';
-const voiceRoomsStorageKey = (diag) => `mattermost-webrtc-voice-rooms-${diag}`;
+/*
+ * The directory is server state and nothing pushes changes, so the panel polls.
+ * It carries occupancy now, which people expect to move in something close to
+ * real time, hence the shorter interval than a room list alone would need.
+ */
+const DIRECTORY_POLL_MS = 10000;
+
+// Comfortably inside the server's 45s expiry, so one lost request is harmless.
+const PRESENCE_HEARTBEAT_MS = 15000;
 
 function genRoomId() {
     return `vr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -52,7 +61,26 @@ class AudioCallPanel extends React.Component {
         turnServerUsername: PropTypes.string,
         turnServerCredential: PropTypes.string,
         config: PropTypes.object,
+        isSystemAdmin: PropTypes.bool,
+        displayName: PropTypes.string,
+        profilesById: PropTypes.object,
     };
+
+    /**
+     * The swarm uuid is the Mattermost user id, so the profile store is the
+     * reliable source for a name. The gossiped name is only a fallback: two
+     * writers fill peerStreams — the `connect` broadcast, which carries a name,
+     * and the swarm's own `peer` event, which does not — and the broadcast is
+     * lost outright on anyone who subscribed after it went out. Whoever the
+     * `peer` event reached first used to be listed by raw id.
+     */
+    peerDisplayName(peerId, peer) {
+        const {profilesById} = this.props;
+        const profile = (profilesById || {})[peer.userId || peerId];
+        const fromProfile = userDisplayName(profile);
+
+        return fromProfile || peer.displayName || peer.username || 'Unknown user';
+    }
 
     constructor(props) {
         super(props);
@@ -84,164 +112,156 @@ class AudioCallPanel extends React.Component {
             config,
             activeRoom: null,
             channelList: [],
+            directoryError: '',
             newChannelNameDraft: '',
             showCreateInput: false,
         };
 
         this.swarmInstance = null;
-        this.directoryHub = null;
+        this.directoryPoll = null;
+        this.presenceHeartbeat = null;
         this.currentMyStream = null;
         this.connectPending = false;
         this.isUnmounted = false;
     }
 
     componentDidMount() {
-        const {configLoaded, config} = this.props;
-        if (configLoaded && config && config.DiagnosticId) {
-            this.bootstrapDirectory();
-        }
+        // The directory no longer depends on the client config: it is a plugin
+        // endpoint of its own, so it loads even before /v1/config comes back.
+        this.bootstrapDirectory();
     }
 
     componentWillUnmount() {
         this.isUnmounted = true;
+        this.stopPresence();
         this.cleanupConnection(() => {
             /* sync teardown */
         });
-        if (this.directoryHub) {
-            try {
-                this.directoryHub.close();
-            } catch (e) {
-                /* ignore */
-            }
-            this.directoryHub = null;
-        }
+        this.stopDirectory();
     }
 
-    componentDidUpdate(prevProps) {
-        const {configLoaded, config} = this.props;
-        if ((!prevProps.configLoaded && configLoaded) || (prevProps.config?.DiagnosticId !== config?.DiagnosticId)) {
-            if (config && config.DiagnosticId) {
-                this.bootstrapDirectory();
-            }
-        }
-    }
-
-    loadSavedRooms(diag) {
-        if (!diag) {
-            return [];
-        }
-        try {
-            const raw = localStorage.getItem(voiceRoomsStorageKey(diag));
-            return raw ? JSON.parse(raw) : [];
-        } catch (err) {
-            return [];
-        }
-    }
-
-    saveRooms(diag, list) {
-        if (!diag) {
+    applyRooms(rooms) {
+        if (this.isUnmounted) {
             return;
         }
-        try {
-            localStorage.setItem(voiceRoomsStorageKey(diag), JSON.stringify(list.slice(0, 80)));
-        } catch (e) {
-            /* ignore */
-        }
-    }
-
-    mergeRoom(entry) {
-        const {roomId, name} = entry;
-        if (!roomId || !name) {
-            return;
-        }
-        this.setState((prev) => {
-            const next = [...prev.channelList];
-            const i = next.findIndex((r) => r.roomId === roomId);
-            const row = {roomId, name, ts: entry.ts || Date.now()};
-            if (i >= 0) {
-                next[i] = {...next[i], ...row};
-            } else {
-                next.push(row);
-            }
-            next.sort((a, b) => a.name.localeCompare(b.name));
-            const {config} = this.props;
-            if (config && config.DiagnosticId) {
-                this.saveRooms(config.DiagnosticId, next);
-            }
-            return {channelList: next};
+        this.setState({
+            channelList: Array.isArray(rooms) ? rooms : [],
+            directoryError: '',
         });
+    }
+
+    reportDirectoryError(message, err) {
+        debug(message, err);
+        if (!this.isUnmounted) {
+            this.setState({directoryError: message});
+        }
+    }
+
+    refreshRooms() {
+        return fetchVoiceRooms().
+            then((rooms) => this.applyRooms(rooms)).
+            catch((err) => this.reportDirectoryError('Could not load the voice channels.', err));
     }
 
     bootstrapDirectory() {
-        const {config, configLoaded} = this.props;
-        if (!configLoaded || !config || !config.DiagnosticId) {
+        if (this.directoryPoll) {
             return;
         }
-        const diag = config.DiagnosticId;
-        if (this.directoryHub) {
-            return;
-        }
-        const saved = this.loadSavedRooms(diag);
-        this.setState((prev) => {
-            const merged = [...saved];
-            for (const r of prev.channelList) {
-                if (!merged.find((m) => m.roomId === r.roomId)) {
-                    merged.push(r);
-                }
-            }
-            merged.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-            return {channelList: merged};
-        });
-
-        const hubName = `mattermost-webrtc-video-${diag}-voice-directory`;
-        const hub = pluginSignalHub(hubName);
-        this.directoryHub = hub;
-        const stream = hub.subscribe(DIRECTORY_CHANNEL);
-        stream.on('data', (msg) => {
-            if (msg && msg.type === 'voice-room' && msg.roomId && msg.name) {
-                this.mergeRoom({
-                    roomId: msg.roomId,
-                    name: msg.name,
-                    ts: msg.ts,
-                });
-            }
-            if (msg && msg.type === 'voice-room-delete' && msg.roomId) {
-                this.removeRoom(msg.roomId, {persist: true, broadcast: false});
-            }
-        });
+        this.refreshRooms();
+        this.directoryPoll = setInterval(() => this.refreshRooms(), DIRECTORY_POLL_MS);
     }
 
-    removeRoom(roomId, opts = {}) {
-        const persist = opts.persist !== false;
-        const {config} = this.props;
-
-        this.setState((prev) => {
-            const next = prev.channelList.filter((r) => r.roomId !== roomId);
-            if (persist && config && config.DiagnosticId) {
-                this.saveRooms(config.DiagnosticId, next);
-            }
-            return {channelList: next};
-        });
-
-        if (opts.broadcast) {
-            this.announceRoomDelete(roomId);
+    stopDirectory() {
+        if (this.directoryPoll) {
+            clearInterval(this.directoryPoll);
+            this.directoryPoll = null;
         }
     }
 
-    announceRoomDelete(roomId) {
-        const {config, configLoaded, userId} = this.props;
-        if (!configLoaded || !config || !config.DiagnosticId || !roomId) {
-            return;
+    announcePresence(roomId) {
+        return sendVoicePresence(roomId).
+            then((rooms) => this.applyRooms(rooms)).
+            catch((err) => debug('voice presence heartbeat failed', err));
+    }
+
+    /**
+     * Keep saying we are here. The server expires an entry that stops being
+     * refreshed, which is what covers a browser that closes without leaving.
+     */
+    startPresence(roomId) {
+        this.stopPresence();
+        this.announcePresence(roomId);
+        this.presenceHeartbeat = setInterval(() => this.announcePresence(roomId), PRESENCE_HEARTBEAT_MS);
+    }
+
+    stopPresence() {
+        if (this.presenceHeartbeat) {
+            clearInterval(this.presenceHeartbeat);
+            this.presenceHeartbeat = null;
         }
-        const hubName = `mattermost-webrtc-video-${config.DiagnosticId}-voice-directory`;
-        const hub = pluginSignalHub(hubName);
-        hub.broadcast(DIRECTORY_CHANNEL, {
-            type: 'voice-room-delete',
-            roomId,
-            userId,
-            ts: Date.now(),
-        });
-        hub.close();
+    }
+
+    clearPresence() {
+        this.stopPresence();
+
+        // Fire and forget: leaving should not wait on the network, and the
+        // entry expires on its own if this never lands.
+        sendVoicePresence('').catch((err) => debug('clearing voice presence failed', err));
+    }
+
+    /**
+     * The one place a roster is drawn, so the list you see from outside a room
+     * and the list you see inside it cannot drift apart.
+     */
+    renderRoster(entries) {
+        const style = getStyle();
+
+        if (entries.length === 0) {
+            return null;
+        }
+
+        return (
+            <ul style={style.list}>
+                {entries.map((entry) => (
+                    <li
+                        key={entry.key}
+                        style={style.listItem}
+                    >
+                        <i
+                            className='icon fa fa-circle'
+                            style={style.online}
+                            aria-hidden='true'
+                        />
+                        {entry.name}
+                    </li>
+                ))}
+            </ul>
+        );
+    }
+
+    /**
+     * Who is in a room, for someone who is not. Names come from the local
+     * profile store when it has them and from the server otherwise — a viewer
+     * who never opened the room will not have those profiles loaded.
+     */
+    renderOccupants(room) {
+        const {profilesById} = this.props;
+        const participants = room.participants || [];
+
+        return this.renderRoster(participants.map((entry) => ({
+            key: entry.id,
+            name: userDisplayName((profilesById || {})[entry.id]) ||
+                userDisplayName({first_name: entry.firstName, last_name: entry.lastName, username: entry.username}) ||
+                'Unknown user',
+        })));
+    }
+
+    canDeleteRoom(room) {
+        const {userId, isSystemAdmin} = this.props;
+
+        // Mirrors what the server enforces; rooms created before the directory
+        // moved server-side carry no creatorId, so nobody but an admin owns them.
+        return Boolean(isSystemAdmin || (room.creatorId && room.creatorId === userId));
     }
 
     handleDeleteRoom = (roomId) => (e) => {
@@ -253,7 +273,13 @@ class AudioCallPanel extends React.Component {
         }
         const {activeRoom} = this.state;
         const finalize = () => {
-            this.removeRoom(roomId, {persist: true, broadcast: true});
+            deleteVoiceRoom(roomId).
+                then((rooms) => this.applyRooms(rooms)).
+                catch((err) => {
+                    const forbidden = err && err.response && err.response.status === 403;
+                    const message = forbidden ? 'Only whoever created a voice channel can delete it.' : 'Could not delete that voice channel.';
+                    this.reportDirectoryError(message, err);
+                });
         };
         if (activeRoom && activeRoom.roomId === roomId) {
             this.leaveRoomInternal(finalize);
@@ -261,23 +287,6 @@ class AudioCallPanel extends React.Component {
             finalize();
         }
     };
-
-    announceRoom(roomId, name) {
-        const {config, configLoaded, userId} = this.props;
-        if (!configLoaded || !config || !config.DiagnosticId) {
-            return;
-        }
-        const hubName = `mattermost-webrtc-video-${config.DiagnosticId}-voice-directory`;
-        const hub = pluginSignalHub(hubName);
-        hub.broadcast(DIRECTORY_CHANNEL, {
-            type: 'voice-room',
-            roomId,
-            name,
-            userId,
-            ts: Date.now(),
-        });
-        hub.close();
-    }
 
     cleanupConnection(done) {
         const finish = typeof done === 'function' ? done : function noopCallback() {
@@ -323,6 +332,7 @@ class AudioCallPanel extends React.Component {
                 }
                 return;
             }
+            this.clearPresence();
             this.setState({
                 activeRoom: null,
                 initialized: false,
@@ -363,10 +373,11 @@ class AudioCallPanel extends React.Component {
                 swarmInitialized: false,
                 peerStreams: {},
                 playBacks: {},
-                audioOn: false,
+                audioOn: true,
                 audioEnabled: true,
                 videoEnabled: false,
             });
+            this.startPresence(roomId);
         });
     };
 
@@ -379,14 +390,21 @@ class AudioCallPanel extends React.Component {
             return;
         }
         const roomId = genRoomId();
-        this.mergeRoom({roomId, name, ts: Date.now()});
-        this.announceRoom(roomId, name);
-        this.setState({
-            showCreateInput: false,
-            newChannelNameDraft: '',
-        }, () => {
-            this.handleJoinRoom(roomId, name)();
-        });
+
+        createVoiceRoom(roomId, name).
+            then((rooms) => {
+                this.applyRooms(rooms);
+                if (this.isUnmounted) {
+                    return;
+                }
+                this.setState({
+                    showCreateInput: false,
+                    newChannelNameDraft: '',
+                }, () => {
+                    this.handleJoinRoom(roomId, name)();
+                });
+            }).
+            catch((err) => this.reportDirectoryError('Could not create that voice channel.', err));
     };
 
     handleToggleCreate = (e) => {
@@ -429,6 +447,7 @@ class AudioCallPanel extends React.Component {
 
         const myUuid = this.props.userId;
         const myUsername = this.props.username;
+        const myDisplayName = this.props.displayName;
         const voiceHubName = `mattermost-webrtc-video-${config.DiagnosticId}-voice-${activeRoom.roomId}`;
         debug('Voice hub', voiceHubName);
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
@@ -444,6 +463,7 @@ class AudioCallPanel extends React.Component {
                 wrap: (outgoingSignalingData) => {
                     outgoingSignalingData.fromUserId = userId;
                     outgoingSignalingData.fromUsername = myUsername;
+                    outgoingSignalingData.fromDisplayName = myDisplayName;
                     return outgoingSignalingData;
                 },
             },
@@ -460,6 +480,7 @@ class AudioCallPanel extends React.Component {
             from: myUuid,
             fromUserId: userId,
             fromUsername: myUsername,
+            fromDisplayName: myDisplayName,
         });
     }
 
@@ -476,7 +497,11 @@ class AudioCallPanel extends React.Component {
                 debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
 
                 const newPeerStreams = Object.assign({}, peerStreams);
-                newPeerStreams[message.from] = {userId: message.fromUserId, username: message.fromUsername};
+                newPeerStreams[message.from] = {
+                    userId: message.fromUserId,
+                    username: message.fromUsername,
+                    displayName: message.fromDisplayName,
+                };
                 this.setState({peerStreams: newPeerStreams});
 
                 setTimeout(() => {
@@ -619,16 +644,29 @@ class AudioCallPanel extends React.Component {
             initialized,
             swarmInitialized,
             audioOn,
+            audioEnabled,
             speakerOn,
             peerStreams,
             activeRoom,
             channelList,
+            directoryError,
             showCreateInput,
             newChannelNameDraft,
         } = this.state;
         const style = getStyle();
 
         debug('Render', userId, initialized, swarmInitialized, this.state, this.props);
+
+        const {isSystemAdmin} = this.props;
+        const selfName = this.props.displayName || 'You';
+        const currentRoom = activeRoom && channelList.find((room) => room.roomId === activeRoom.roomId);
+
+        let connectionHint = 'Connecting…';
+        if (swarmInitialized) {
+            connectionHint = audioOn ? 'You are connected. Others can hear you.' : 'You are connected, with your microphone muted.';
+        } else if (initialized && !audioEnabled) {
+            connectionHint = 'No microphone available — you can listen, but not speak.';
+        }
 
         if (activeRoom && audioOn && !initialized) {
             this.handleRequestPerms();
@@ -644,15 +682,17 @@ class AudioCallPanel extends React.Component {
                     <div style={style.section}>
                         <div style={style.sectionHeader}>
                             <span style={style.sectionTitle}>{'Voice channels'}</span>
-                            <button
-                                type='button'
-                                style={style.linkBtn}
-                                onClick={this.handleToggleCreate}
-                            >
-                                {showCreateInput ? 'Cancel' : '+ New'}
-                            </button>
+                            {isSystemAdmin && (
+                                <button
+                                    type='button'
+                                    style={style.linkBtn}
+                                    onClick={this.handleToggleCreate}
+                                >
+                                    {showCreateInput ? 'Cancel' : '+ New'}
+                                </button>
+                            )}
                         </div>
-                        {showCreateInput && (
+                        {isSystemAdmin && showCreateInput && (
                             <div style={style.createBox}>
                                 <label
                                     htmlFor='webrtc-voice-channel-name'
@@ -682,16 +722,33 @@ class AudioCallPanel extends React.Component {
                                 </button>
                             </div>
                         )}
+                        {directoryError && (
+                            <div style={style.roomHint}>{directoryError}</div>
+                        )}
                         <ul style={style.roomList}>
                             {channelList.length === 0 && !showCreateInput && (
-                                <li style={style.roomHint}>{'No channels yet — create one or wait for a teammate to announce one.'}</li>
+                                <li style={style.roomHint}>
+                                    {isSystemAdmin ?
+                                        'No channels yet — create one and everyone on this server will see it.' :
+                                        'No voice channels yet. A system administrator can create one.'}
+                                </li>
                             )}
                             {channelList.map((r) => (
                                 <li
                                     key={r.roomId}
                                     style={style.roomRow}
                                 >
-                                    <span style={style.roomName}>{r.name}</span>
+                                    <div style={style.roomName}>
+                                        <span style={style.roomTitle}>
+                                            <i
+                                                className='icon fa fa-volume-up'
+                                                style={style.roomIcon}
+                                                aria-hidden='true'
+                                            />
+                                            <span style={style.roomTitleText}>{r.name}</span>
+                                        </span>
+                                        {this.renderOccupants(r)}
+                                    </div>
                                     <span style={style.roomActions}>
                                         <button
                                             type='button'
@@ -700,15 +757,17 @@ class AudioCallPanel extends React.Component {
                                         >
                                             {'Join'}
                                         </button>
-                                        <button
-                                            type='button'
-                                            style={style.deleteBtn}
-                                            title='Delete this voice channel for everyone'
-                                            aria-label={`Delete voice channel ${r.name}`}
-                                            onClick={this.handleDeleteRoom(r.roomId)}
-                                        >
-                                            <i className='fa fa-trash'/>
-                                        </button>
+                                        {this.canDeleteRoom(r) && (
+                                            <button
+                                                type='button'
+                                                style={style.deleteBtn}
+                                                title='Delete this voice channel for everyone'
+                                                aria-label={`Delete voice channel ${r.name}`}
+                                                onClick={this.handleDeleteRoom(r.roomId)}
+                                            >
+                                                <i className='fa fa-trash'/>
+                                            </button>
+                                        )}
                                     </span>
                                 </li>
                             ))}
@@ -719,16 +778,25 @@ class AudioCallPanel extends React.Component {
                 {activeRoom && (
                     <div style={style.section}>
                         <div style={style.inRoomHeader}>
-                            <span style={style.inRoomTitle}>{activeRoom.name}</span>
+                            <span style={style.inRoomTitle}>
+                                <i
+                                    className='icon fa fa-volume-up'
+                                    style={style.roomIcon}
+                                    aria-hidden='true'
+                                />
+                                <span style={style.roomTitleText}>{activeRoom.name}</span>
+                            </span>
                             <span style={style.inRoomHeaderActions}>
-                                <button
-                                    type='button'
-                                    style={style.deleteChannelBtn}
-                                    onClick={this.handleDeleteRoom(activeRoom.roomId)}
-                                    title='Delete this voice channel for everyone and leave'
-                                >
-                                    {'Delete'}
-                                </button>
+                                {currentRoom && this.canDeleteRoom(currentRoom) && (
+                                    <button
+                                        type='button'
+                                        style={style.deleteChannelBtn}
+                                        onClick={this.handleDeleteRoom(activeRoom.roomId)}
+                                        title='Delete this voice channel for everyone and leave'
+                                    >
+                                        {'Delete'}
+                                    </button>
+                                )}
                                 <button
                                     type='button'
                                     style={style.leaveBtn}
@@ -757,33 +825,14 @@ class AudioCallPanel extends React.Component {
                                 onKeyDown={(ev) => ev.key === 'Enter' && this.handleSpeakerToggle()}
                             />
                         </div>
-                        <p style={style.hint}>{'Turn the microphone on to connect and speak.'}</p>
-                        <ul style={style.list}>
-                            {swarmInitialized && (
-                                <li
-                                    style={style.listItem}
-                                    key='self'
-                                >
-                                    <i
-                                        className={'icon fa fa-circle'}
-                                        style={style.online}
-                                    />
-                                    {'You'}
-                                </li>
-                            )}
-                            {Object.keys(peerStreams).map((id) => (
-                                <li
-                                    key={id}
-                                    style={style.listItem}
-                                >
-                                    <i
-                                        className={'icon fa fa-circle'}
-                                        style={style.online}
-                                    />
-                                    {peerStreams[id].username || id}
-                                </li>
-                            ))}
-                        </ul>
+                        <p style={style.hint}>{connectionHint}</p>
+                        {this.renderRoster([
+                            ...(swarmInitialized ? [{key: 'self', name: selfName}] : []),
+                            ...Object.keys(peerStreams).map((id) => ({
+                                key: id,
+                                name: this.peerDisplayName(id, peerStreams[id]),
+                            })),
+                        ])}
                     </div>
                 )}
             </div>
@@ -792,16 +841,27 @@ class AudioCallPanel extends React.Component {
 }
 
 const mapStateToProps = (state) => {
-    const currentUser = getCurrentUser(state);
+    const currentUser = getCurrentUser(state) || {};
+    const roles = currentUser.roles || '';
     const profiles = getProfiles(state);
-    const {configLoaded, stunServer, turnServer, turnServerUsername, turnServerCredential} = state[`plugins-${pluginId}`];
+    const {configLoaded, stunServer, turnServer, turnServerUsername, turnServerCredential} = state[`plugins-${pluginId}`] || {};
     const config = getConfig(state);
 
+    const profilesById = {};
+    for (const profile of profiles) {
+        if (profile && profile.id) {
+            profilesById[profile.id] = profile;
+        }
+    }
+
     return {
-        userId: currentUser.id,
-        username: currentUser.username,
+        userId: currentUser.id || '',
+        username: currentUser.username || '',
+        displayName: userDisplayName(currentUser),
+        isSystemAdmin: roles.split(' ').includes('system_admin'),
         currentUser,
         profiles,
+        profilesById,
         configLoaded,
         stunServer,
         turnServer,
@@ -888,7 +948,7 @@ const getStyle = () => ({
     },
     roomRow: {
         display: 'flex',
-        alignItems: 'center',
+        alignItems: 'flex-start',
         justifyContent: 'space-between',
         gap: 8,
         padding: '6px 0',
@@ -898,10 +958,25 @@ const getStyle = () => ({
     },
     roomName: {
         flex: 1,
+        minWidth: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '2px',
+    },
+    roomTitle: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
+        minWidth: 0,
+    },
+    roomTitleText: {
         overflow: 'hidden',
         textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
-        minWidth: 0,
+    },
+    roomIcon: {
+        flex: '0 0 auto',
+        opacity: 0.7,
     },
     roomActions: {
         display: 'flex',
@@ -948,9 +1023,9 @@ const getStyle = () => ({
         color: '#fff',
         fontWeight: 600,
         fontSize: '0.95em',
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
+        display: 'flex',
+        alignItems: 'center',
+        gap: '6px',
         minWidth: 0,
     },
     inRoomHeaderActions: {
