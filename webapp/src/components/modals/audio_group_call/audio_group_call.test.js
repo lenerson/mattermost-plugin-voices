@@ -71,7 +71,7 @@ describe('AudioCallPanel room directory', () => {
         expect(panel.startPresence).toHaveBeenCalledWith('room-1');
     });
 
-    test('shows channel settings on hover and deletes from its popup menu', () => {
+    test('shows stable channel settings on hover and deletes from its popup menu', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
@@ -89,14 +89,20 @@ describe('AudioCallPanel room directory', () => {
         };
 
         let rendered = panel.render();
-        expect(findElements(rendered, (element) => element.props && element.props['aria-label'] === 'Voice channel settings for Standup')).toHaveLength(0);
-
         const roomRow = findElements(rendered, (element) => element.type === 'li' && element.props.onMouseEnter)[0];
+        const initialRowStyle = roomRow.props.style;
+        const hiddenSettingsButton = findElements(rendered, (element) => element.props && element.props['aria-label'] === 'Voice channel settings for Standup')[0];
+
+        expect(hiddenSettingsButton.props.style.visibility).toBe('hidden');
+        expect(hiddenSettingsButton.props.tabIndex).toBe(-1);
+
         roomRow.props.onMouseEnter();
 
         rendered = panel.render();
         const settingsButton = findElements(rendered, (element) => element.props && element.props['aria-label'] === 'Voice channel settings for Standup')[0];
-        expect(settingsButton).toBeDefined();
+        expect(settingsButton.props.style.visibility).toBeUndefined();
+        expect(settingsButton.props.tabIndex).toBe(0);
+        expect(findElements(rendered, (element) => element.type === 'li' && element.props.onMouseEnter)[0].props.style).toEqual(initialRowStyle);
 
         const settingsEvent = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
         settingsButton.props.onClick(settingsEvent);
@@ -106,10 +112,13 @@ describe('AudioCallPanel room directory', () => {
 
         rendered = panel.render();
         expect(findElements(rendered, (element) => element.props && element.props.role === 'menu')).toHaveLength(1);
+        expect(findElements(rendered, (element) => element.type === 'li' && element.props.onMouseEnter)[0].props.style).toEqual(initialRowStyle);
+        expect(findElements(rendered, (element) => element.type === 'ul')[0].props.style.overflow).toBe('visible');
 
         const deleteHandler = jest.fn();
         panel.handleDeleteRoom = jest.fn(() => deleteHandler);
         const deleteItem = findElements(rendered, (element) => element.props && element.props.role === 'menuitem')[0];
+        expect(deleteItem.props.style.color).toBe('#ffb4b4');
         const deleteEvent = {};
         deleteItem.props.onClick(deleteEvent);
 

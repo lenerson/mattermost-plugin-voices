@@ -798,7 +798,7 @@ export class AudioCallPanel extends React.Component {
                         {directoryError && (
                             <div style={style.roomHint}>{directoryError}</div>
                         )}
-                        <ul style={style.roomList}>
+                        <ul style={openRoomMenuId ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
                             {channelList.length === 0 && !showCreateInput && (
                                 <li style={style.roomHint}>
                                     {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
@@ -807,7 +807,7 @@ export class AudioCallPanel extends React.Component {
                             {channelList.map((r) => (
                                 <li
                                     key={r.roomId}
-                                    style={openRoomMenuId === r.roomId ? {...style.roomRow, ...style.roomRowMenuOpen} : style.roomRow}
+                                    style={style.roomRow}
                                     onMouseEnter={this.handleRoomRowEnter(r.roomId)}
                                     onMouseLeave={this.handleRoomRowLeave(r.roomId)}
                                     onFocus={this.handleRoomRowEnter(r.roomId)}
@@ -830,15 +830,17 @@ export class AudioCallPanel extends React.Component {
                                         </span>
                                         {this.renderOccupants(r)}
                                     </button>
-                                    {this.canDeleteRoom(r) && (hoveredRoomId === r.roomId || openRoomMenuId === r.roomId) && (
+                                    {this.canDeleteRoom(r) && (
                                         <span style={style.roomActions}>
                                             <button
                                                 type='button'
-                                                style={style.roomSettingsBtn}
+                                                style={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? style.roomSettingsBtn : {...style.roomSettingsBtn, ...style.roomSettingsBtnHidden}}
                                                 title='Voice channel settings'
                                                 aria-label={`Voice channel settings for ${r.name}`}
                                                 aria-haspopup='menu'
                                                 aria-expanded={openRoomMenuId === r.roomId}
+                                                aria-hidden={hoveredRoomId !== r.roomId && openRoomMenuId !== r.roomId}
+                                                tabIndex={hoveredRoomId === r.roomId || openRoomMenuId === r.roomId ? 0 : -1}
                                                 onClick={this.handleToggleRoomMenu(r.roomId)}
                                             >
                                                 <i
@@ -1041,19 +1043,20 @@ const getStyle = () => ({
         maxHeight: '220px',
         overflowY: 'auto',
     },
+    roomListMenuOpen: {
+        overflow: 'visible',
+    },
     roomRow: {
         position: 'relative',
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'space-between',
         gap: 8,
+        minHeight: 26,
         padding: '6px 0',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
         color: '#fff',
         fontSize: '0.9em',
-    },
-    roomRowMenuOpen: {
-        paddingBottom: '46px',
     },
     roomName: {
         flex: 1,
@@ -1109,6 +1112,11 @@ const getStyle = () => ({
         lineHeight: 1,
         fontFamily: 'inherit',
     },
+    roomSettingsBtnHidden: {
+        visibility: 'hidden',
+        opacity: 0,
+        pointerEvents: 'none',
+    },
     roomMenu: {
         position: 'absolute',
         top: 'calc(100% + 4px)',
@@ -1130,6 +1138,7 @@ const getStyle = () => ({
         color: '#ffb4b4',
         cursor: 'pointer',
         fontSize: '0.9em',
+        fontWeight: 600,
         fontFamily: 'inherit',
         textAlign: 'left',
     },
