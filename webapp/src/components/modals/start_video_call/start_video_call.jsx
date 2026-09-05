@@ -4,6 +4,20 @@ import {Modal} from 'react-bootstrap';
 
 import debug from '../../../utils/debug';
 
+/*
+ * dialogClassName has always pointed at a class nobody defined — the plugin
+ * ships no stylesheet — so the call sat at Bootstrap's default dialog width,
+ * around 600px, however big the window was. Inline styles cannot reach the
+ * dialog element, which react-bootstrap owns, so define the class here.
+ */
+const MODAL_CSS = `
+.webrtc-video-modal-dialog {
+    width: min(1180px, 94vw);
+    max-width: min(1180px, 94vw);
+    margin: 24px auto;
+}
+`;
+
 export default class StartVideoCallModal extends PureComponent {
     static propTypes = {
         userId: PropTypes.string.isRequired,
@@ -23,20 +37,80 @@ export default class StartVideoCallModal extends PureComponent {
         audioOn: PropTypes.bool.isRequired,
         videoOn: PropTypes.bool.isRequired,
         peerStream: PropTypes.object,
+        mediaError: PropTypes.string,
+        callAudioOnly: PropTypes.bool.isRequired,
         selfStream: PropTypes.object,
         peerAccepted: PropTypes.bool.isRequired,
         outgoingCallDeclined: PropTypes.bool.isRequired,
     };
 
+    constructor(props) {
+        super(props);
+        this.state = {fullscreen: false};
+    }
+
     componentDidMount() {
         this.attachStream(this.remoteVideoRef, this.props.peerStream, null);
         this.attachStream(this.selfVideoRef, this.props.selfStream, null);
+        document.addEventListener('fullscreenchange', this.handleFullscreenChange);
+        document.addEventListener('webkitfullscreenchange', this.handleFullscreenChange);
+    }
+
+    componentWillUnmount() {
+        document.removeEventListener('fullscreenchange', this.handleFullscreenChange);
+        document.removeEventListener('webkitfullscreenchange', this.handleFullscreenChange);
+        this.exitFullscreen();
     }
 
     componentDidUpdate(prevProps) {
         this.attachStream(this.remoteVideoRef, this.props.peerStream, prevProps.peerStream);
         this.attachStream(this.selfVideoRef, this.props.selfStream, prevProps.selfStream);
+
+        // Leaving the browser in fullscreen after the call has gone would strand
+        // the user on a black screen with nothing to click.
+        if (prevProps.visible && !this.props.visible) {
+            this.exitFullscreen();
+        }
     }
+
+    // The browser is the source of truth: Esc and the F11 key both leave
+    // fullscreen without going through our button.
+    handleFullscreenChange = () => {
+        const active = document.fullscreenElement || document.webkitFullscreenElement;
+        this.setState({fullscreen: Boolean(active)});
+    };
+
+    exitFullscreen() {
+        const active = document.fullscreenElement || document.webkitFullscreenElement;
+        if (!active) {
+            return;
+        }
+        const exit = document.exitFullscreen || document.webkitExitFullscreen;
+        if (exit) {
+            Promise.resolve(exit.call(document)).catch((e) => {
+                debug('Could not leave fullscreen', e);
+            });
+        }
+    }
+
+    toggleFullscreen = () => {
+        const el = this.stageRef;
+        if (!el) {
+            return;
+        }
+        if (document.fullscreenElement || document.webkitFullscreenElement) {
+            this.exitFullscreen();
+            return;
+        }
+        const request = el.requestFullscreen || el.webkitRequestFullscreen;
+        if (!request) {
+            debug('Fullscreen is not available in this browser');
+            return;
+        }
+        Promise.resolve(request.call(el)).catch((e) => {
+            debug('Could not enter fullscreen', e);
+        });
+    };
 
     attachStream(el, stream, prevStream) {
         if (!el || !stream) {
@@ -81,8 +155,9 @@ export default class StartVideoCallModal extends PureComponent {
     render() {
         const {
             visible, incoming, outgoing, peerName, accepted, callPeerAudioOn, callPeerVideoOn,
-            peerStream, peerAccepted, outgoingCallDeclined, audioOn, videoOn, selfStream,
+            peerStream, peerAccepted, outgoingCallDeclined, audioOn, videoOn, selfStream, mediaError, callAudioOnly,
         } = this.props;
+        const {fullscreen} = this.state;
         const s = styles;
 
         debug('[start_video_call] props', this.props);
@@ -101,6 +176,7 @@ export default class StartVideoCallModal extends PureComponent {
                 onHide={this.handleClose}
                 backdrop='static'
             >
+                <style>{MODAL_CSS}</style>
                 <div style={s.shell}>
                     {!accepted && incoming && (
                         <div style={s.incomingWrap}>
@@ -111,7 +187,7 @@ export default class StartVideoCallModal extends PureComponent {
                             <div style={s.avatar}>
                                 {initials}
                             </div>
-                            <h2 style={s.title}>{'Incoming video call'}</h2>
+                            <h2 style={s.title}>{callAudioOnly ? 'Incoming voice call' : 'Incoming video call'}</h2>
                             <p style={s.subtitle}>{peerName}</p>
                             <div style={s.ringActions}>
                                 <button
@@ -168,6 +244,12 @@ export default class StartVideoCallModal extends PureComponent {
                                 {outgoing && !peerAccepted ? 'Ringing…' : 'Connecting…'}
                             </h2>
                             <p style={s.subtitleMuted}>{peerName}</p>
+                            {mediaError && (
+                                <p style={s.mediaError}>
+                                    {mediaError}
+                                    {' The call cannot start without a camera or microphone.'}
+                                </p>
+                            )}
                             {outgoing && !peerAccepted && (
                                 <button
                                     type='button'
@@ -181,17 +263,26 @@ export default class StartVideoCallModal extends PureComponent {
                     )}
 
                     {showActiveCall && peerStream && (
-                        <div style={s.videoStage}>
+                        <div
+                            style={{...s.videoStage, ...(fullscreen ? s.videoStageFullscreen : {})}}
+                            ref={(el) => {
+                                this.stageRef = el;
+                            }}
+                        >
                             <video
-                                style={s.remoteVideo}
+                                style={{...s.remoteVideo, ...(fullscreen ? s.remoteVideoFullscreen : {})}}
                                 autoPlay={true}
                                 playsInline={true}
+                                onDoubleClick={this.toggleFullscreen}
                                 ref={(el) => {
                                     this.remoteVideoRef = el;
                                 }}
                             >
                                 {'Your browser does not support the video tag.'}
                             </video>
+                            {mediaError && (
+                                <div style={s.mediaBanner}>{mediaError}</div>
+                            )}
                             {selfStream && (
                                 <video
                                     style={s.pip}
@@ -217,6 +308,15 @@ export default class StartVideoCallModal extends PureComponent {
                                 )}
                             </div>
                             <div style={s.toolbar}>
+                                <button
+                                    type='button'
+                                    style={{...s.toolBtn, ...s.toolBtnOn}}
+                                    onClick={this.toggleFullscreen}
+                                    title={fullscreen ? 'Leave full screen' : 'Full screen (or double-click the video)'}
+                                    aria-label={fullscreen ? 'Leave full screen' : 'Enter full screen'}
+                                >
+                                    <i className={fullscreen ? 'fa fa-compress' : 'fa fa-expand'}/>
+                                </button>
                                 <button
                                     type='button'
                                     style={{
@@ -349,6 +449,28 @@ const styles = {
     fabIconFlip: {
         transform: 'scaleX(-1)',
     },
+    mediaBanner: {
+        position: 'absolute',
+        top: 12,
+        left: '50%',
+        transform: 'translateX(-50%)',
+        maxWidth: '80%',
+        padding: '6px 12px',
+        borderRadius: 4,
+        backgroundColor: 'rgba(0, 0, 0, 0.72)',
+        color: '#f5ab00',
+        fontSize: '0.8rem',
+        textAlign: 'center',
+        zIndex: 3,
+    },
+    mediaError: {
+        maxWidth: 340,
+        margin: '4px auto 12px',
+        fontSize: '0.85rem',
+        lineHeight: 1.4,
+        color: '#f5ab00',
+        textAlign: 'center',
+    },
     connectingWrap: {
         padding: '56px 24px 40px',
         textAlign: 'center',
@@ -389,6 +511,23 @@ const styles = {
         position: 'relative',
         background: '#000',
         minHeight: '420px',
+    },
+    videoStageFullscreen: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '100vw',
+        height: '100vh',
+        minHeight: '100vh',
+    },
+    remoteVideoFullscreen: {
+
+        // contain, not cover: filling the screen edge to edge would crop faces
+        // off a portrait or ultrawide camera.
+        width: '100vw',
+        height: '100vh',
+        maxHeight: '100vh',
+        objectFit: 'contain',
     },
     remoteVideo: {
         display: 'block',
