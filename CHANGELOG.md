@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.13 - 2026-09-06
+
+### Changed
+- The voice invitation picker can now be closed from its **X** control or by clicking outside it.
+- Invitation controls use a transparent trigger and a paper-plane send icon.
+
+### Fixed
+- The invitation picker keeps its full width and opens to the right of the sidebar, preventing its left edge from being clipped when the sidebar is narrow.
+
 ## 2.4.12 - 2026-09-06
 
 ### Added
