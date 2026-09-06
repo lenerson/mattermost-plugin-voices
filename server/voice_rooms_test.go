@@ -21,6 +21,7 @@ type fakeKV struct {
 	values            map[string][]byte
 	webSocketEvents   []string
 	webSocketPayloads []map[string]interface{}
+	webSocketTargets  []string
 }
 
 // Creating a voice channel is a system-admin action, so the fixture's creator
@@ -70,6 +71,12 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 	api.On("PublishWebSocketEvent", mock.AnythingOfType("string"), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
 		kv.webSocketEvents = append(kv.webSocketEvents, args.String(0))
 		kv.webSocketPayloads = append(kv.webSocketPayloads, args.Get(1).(map[string]interface{}))
+		broadcast, _ := args.Get(2).(*model.WebsocketBroadcast)
+		if broadcast != nil {
+			kv.webSocketTargets = append(kv.webSocketTargets, broadcast.UserId)
+		} else {
+			kv.webSocketTargets = append(kv.webSocketTargets, "")
+		}
 	}).Maybe()
 
 	// Presence resolves names through the server so a viewer who never opened
