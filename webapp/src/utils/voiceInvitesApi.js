@@ -22,3 +22,11 @@ export async function sendVoiceRoomInvite(roomId, targetUserId) {
         data: {roomId, targetUserId},
     });
 }
+
+export async function respondVoiceRoomInvite(postId, inviteId, decision) {
+    await mattermostApiRequest({
+        method: 'post',
+        url: `/plugins/${pluginId}/v1/voice/invite/response`,
+        data: {postId, inviteId, decision},
+    });
+}

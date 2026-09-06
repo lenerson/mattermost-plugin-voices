@@ -43,6 +43,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleVoicePresence(w, r)
 	case "/v1/voice/invite":
 		p.handleVoiceInvite(w, r)
+	case "/v1/voice/invite/response":
+		p.handleVoiceInviteResponse(w, r)
 	case "/v1/signal/publish":
 		p.handleSignalPublish(w, r)
 	case "/v1/signal/stream":

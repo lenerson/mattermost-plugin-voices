@@ -5,6 +5,7 @@ import debug from './debug';
 export const VOICE_INVITE_EVENT = `custom_${pluginId}_voice_invite`;
 
 const listeners = new Set();
+const decisionListeners = new Set();
 
 export function emitVoiceInvite(invite) {
     for (const listener of Array.from(listeners)) {
@@ -19,6 +20,21 @@ export function emitVoiceInvite(invite) {
 export function subscribeVoiceInvites(listener) {
     listeners.add(listener);
     return () => listeners.delete(listener);
+}
+
+export function emitVoiceInviteDecision(invite, decision) {
+    for (const listener of Array.from(decisionListeners)) {
+        try {
+            listener({invite, decision});
+        } catch (error) {
+            debug('voice invite decision listener failed', error);
+        }
+    }
+}
+
+export function subscribeVoiceInviteDecisions(listener) {
+    decisionListeners.add(listener);
+    return () => decisionListeners.delete(listener);
 }
 
 export function registerVoiceInviteEvents(registry) {

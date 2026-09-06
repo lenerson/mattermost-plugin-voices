@@ -11,6 +11,8 @@ import LeftSidebarHeader from './components/left_sidebar_header';
 import Reducer from './reducers';
 import WebrtcInvitePost from './components/post_types/webrtc_invite_post';
 import {WEBRTC_INVITE_POST_TYPE} from './constants/callInvite';
+import VoiceInvitePost from './components/post_types/voice_invite_post';
+import {VOICE_INVITE_POST_TYPE} from './constants/voiceInvite';
 import {loadConfig, makeVideoCall, openVideoCallPicker} from './actions';
 import {getDirectMessagePeerUserId} from './utils/dmPeer';
 import {withErrorBoundary} from './components/with_error_boundary';
@@ -154,6 +156,11 @@ export default class Plugin {
         safely('registerPostTypeComponent', () => registry.registerPostTypeComponent(
             WEBRTC_INVITE_POST_TYPE,
             withErrorBoundary(WebrtcInvitePost, 'webrtc_invite_post'),
+        ));
+
+        safely('registerPostTypeComponent(voice_invite)', () => registry.registerPostTypeComponent(
+            VOICE_INVITE_POST_TYPE,
+            withErrorBoundary(VoiceInvitePost, 'voice_invite_post'),
         ));
 
         safely('registerWebSocketEventHandler(voice_presence)', () => registerVoicePresenceEvents(registry));

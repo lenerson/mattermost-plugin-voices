@@ -19,6 +19,7 @@ import (
 // the retry path in mutateVoiceRooms runs for real instead of being stubbed out.
 type fakeKV struct {
 	values            map[string][]byte
+	posts             map[string]*model.Post
 	webSocketEvents   []string
 	webSocketPayloads []map[string]interface{}
 	webSocketTargets  []string
@@ -31,7 +32,7 @@ const testAdmin = "creator"
 func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 	admins = append(admins, testAdmin)
 
-	kv := &fakeKV{values: map[string][]byte{}}
+	kv := &fakeKV{values: map[string][]byte{}, posts: map[string]*model.Post{}}
 	api := &plugintest.API{}
 
 	api.On("KVGet", mock.AnythingOfType("string")).Return(
@@ -86,6 +87,47 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 			return &model.User{Id: userID, Username: userID + "-handle", FirstName: "First", LastName: userID}
 		},
 		func(userID string) *model.AppError {
+			return nil
+		},
+	).Maybe()
+
+	api.On("GetDirectChannel", mock.AnythingOfType("string"), mock.AnythingOfType("string")).Return(
+		func(userID1, userID2 string) *model.Channel {
+			return &model.Channel{Id: "dm-" + userID1 + "-" + userID2, Type: model.ChannelTypeDirect}
+		},
+		func(userID1, userID2 string) *model.AppError {
+			return nil
+		},
+	).Maybe()
+
+	api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(
+		func(post *model.Post) *model.Post {
+			copyOfPost := *post
+			copyOfPost.Id = "post-" + strconv.Itoa(len(kv.posts)+1)
+			kv.posts[copyOfPost.Id] = &copyOfPost
+			return &copyOfPost
+		},
+		func(post *model.Post) *model.AppError {
+			return nil
+		},
+	).Maybe()
+
+	api.On("GetPost", mock.AnythingOfType("string")).Return(
+		func(postID string) *model.Post {
+			return kv.posts[postID]
+		},
+		func(postID string) *model.AppError {
+			return nil
+		},
+	).Maybe()
+
+	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(
+		func(post *model.Post) *model.Post {
+			copyOfPost := *post
+			kv.posts[post.Id] = &copyOfPost
+			return &copyOfPost
+		},
+		func(post *model.Post) *model.AppError {
 			return nil
 		},
 	).Maybe()

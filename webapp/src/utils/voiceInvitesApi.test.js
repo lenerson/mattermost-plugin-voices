@@ -1,4 +1,4 @@
-import {sendVoiceRoomInvite, searchVoiceInviteUsers} from './voiceInvitesApi';
+import {respondVoiceRoomInvite, sendVoiceRoomInvite, searchVoiceInviteUsers} from './voiceInvitesApi';
 import {mattermostApiRequest} from './mattermostApi';
 
 jest.mock('./mattermostApi', () => ({
@@ -37,6 +37,18 @@ describe('voiceInvitesApi', () => {
             method: 'post',
             url: '/plugins/mattermost-webrtc-video/v1/voice/invite',
             data: {roomId: 'room-1', targetUserId: 'user-2'},
+        });
+    });
+
+    test('responds to a persisted room invitation', async () => {
+        mattermostApiRequest.mockResolvedValue({status: 204});
+
+        await respondVoiceRoomInvite('post-1', 'invite-1', 'accepted');
+
+        expect(mattermostApiRequest).toHaveBeenCalledWith({
+            method: 'post',
+            url: '/plugins/mattermost-webrtc-video/v1/voice/invite/response',
+            data: {postId: 'post-1', inviteId: 'invite-1', decision: 'accepted'},
         });
     });
 });

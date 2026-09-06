@@ -12,13 +12,14 @@ jest.mock('../../../utils/voiceRoomSounds', () => ({
     playVoiceRoomLeaveSound: jest.fn(),
 }));
 jest.mock('../../../utils/voiceInvitesApi', () => ({
+    respondVoiceRoomInvite: jest.fn(),
     searchVoiceInviteUsers: jest.fn(),
     sendVoiceRoomInvite: jest.fn(),
 }));
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
-import {sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
-import {emitVoiceInvite} from '../../../utils/voiceInviteEvents';
+import {respondVoiceRoomInvite, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
+import {emitVoiceInvite, emitVoiceInviteDecision} from '../../../utils/voiceInviteEvents';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
@@ -316,6 +317,7 @@ describe('AudioCallPanel room directory', () => {
 describe('AudioCallPanel voice invitations', () => {
     beforeEach(() => {
         sendVoiceRoomInvite.mockReset();
+        respondVoiceRoomInvite.mockReset();
         playVoiceRoomInviteSound.mockClear();
     });
 
@@ -386,7 +388,7 @@ describe('AudioCallPanel voice invitations', () => {
         expect(inviteButton.props.children.props.className).toBe('icon fa fa-user-plus');
     });
 
-    test('shows a targeted invitation and joins its room when accepted', () => {
+    test('shows a targeted invitation and joins its room when accepted', async () => {
         const panel = new AudioCallPanel({
             userId: 'user-2',
             profilesById: {},
@@ -399,12 +401,15 @@ describe('AudioCallPanel voice invitations', () => {
         const joinHandler = jest.fn();
         panel.handleJoinRoom = jest.fn(() => joinHandler);
         panel.startVoiceInviteEvents();
+        respondVoiceRoomInvite.mockResolvedValue();
 
         emitVoiceInvite({
             roomId: 'room-1',
             roomName: 'Standup',
             inviterId: 'user-1',
             inviterUsername: 'host',
+            inviteId: 'invite-1',
+            postId: 'post-1',
             expiresAt: Date.now() + VOICE_INVITE_TTL_MS,
         });
 
@@ -414,11 +419,37 @@ describe('AudioCallPanel voice invitations', () => {
         expect(findElements(rendered, (element) => element.props && element.props.role === 'alert')).toHaveLength(1);
 
         const event = {preventDefault: jest.fn()};
-        panel.handleAcceptVoiceInvite(event);
+        await panel.handleAcceptVoiceInvite(event);
+        expect(respondVoiceRoomInvite).toHaveBeenCalledWith('post-1', 'invite-1', 'accepted');
         expect(panel.handleJoinRoom).toHaveBeenCalledWith('room-1', 'Standup');
-        expect(joinHandler).toHaveBeenCalledWith(event);
+        expect(joinHandler).toHaveBeenCalledWith(null);
         expect(panel.state.incomingVoiceInvite).toBeNull();
 
+        panel.stopVoiceInviteEvents();
+    });
+
+    test('applies a decline made from the direct-message invitation', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-2',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        applyStateSynchronously(panel);
+        panel.startVoiceInviteEvents();
+        const invite = {
+            roomId: 'room-1',
+            roomName: 'Standup',
+            inviterId: 'user-1',
+            inviteId: 'invite-1',
+            postId: 'post-1',
+            expiresAt: Date.now() + VOICE_INVITE_TTL_MS,
+        };
+        emitVoiceInvite(invite);
+
+        emitVoiceInviteDecision(invite, 'declined');
+
+        expect(panel.state.incomingVoiceInvite).toBeNull();
         panel.stopVoiceInviteEvents();
     });
 

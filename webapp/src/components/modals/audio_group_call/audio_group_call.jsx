@@ -7,13 +7,14 @@ import {getConfig} from 'mattermost-redux/selectors/entities/general';
 import PropTypes from 'prop-types';
 import swarm from 'webrtc-swarm';
 
+import {VOICE_INVITE_ACCEPTED, VOICE_INVITE_DECLINED} from '../../../constants/voiceInvite';
 import pluginSignalHub from '../../../utils/pluginSignalHub';
 import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
 import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} from '../../../utils/voiceRoomsApi';
-import {searchVoiceInviteUsers, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
-import {subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
+import {respondVoiceRoomInvite, searchVoiceInviteUsers, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
+import {subscribeVoiceInviteDecisions, subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import {id as pluginId} from 'manifest';
@@ -134,6 +135,8 @@ export class AudioCallPanel extends React.Component {
             inviteStatus: '',
             invitingUserId: null,
             incomingVoiceInvite: null,
+            voiceInviteResponsePending: false,
+            voiceInviteResponseError: '',
         };
 
         this.swarmInstance = null;
@@ -145,6 +148,7 @@ export class AudioCallPanel extends React.Component {
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
         this.unsubscribeVoiceInvites = null;
+        this.unsubscribeVoiceInviteDecisions = null;
         this.voiceInviteExpiryTimer = null;
         this.inviteSearchRequestId = 0;
     }
@@ -217,14 +221,25 @@ export class AudioCallPanel extends React.Component {
                 }
                 this.clearVoiceInviteExpiryTimer();
                 playVoiceRoomInviteSound();
-                this.setState({incomingVoiceInvite: invite});
+                this.setState({
+                    incomingVoiceInvite: invite,
+                    voiceInviteResponsePending: false,
+                    voiceInviteResponseError: '',
+                });
                 this.voiceInviteExpiryTimer = setTimeout(() => {
                     this.voiceInviteExpiryTimer = null;
                     if (!this.isUnmounted && this.state.incomingVoiceInvite === invite) {
-                        this.setState({incomingVoiceInvite: null});
+                        this.setState({
+                            incomingVoiceInvite: null,
+                            voiceInviteResponsePending: false,
+                            voiceInviteResponseError: '',
+                        });
                     }
                 }, Number(invite.expiresAt) - Date.now());
             });
+        }
+        if (!this.unsubscribeVoiceInviteDecisions) {
+            this.unsubscribeVoiceInviteDecisions = subscribeVoiceInviteDecisions((result) => this.applyVoiceInviteDecision(result));
         }
     }
 
@@ -233,6 +248,10 @@ export class AudioCallPanel extends React.Component {
         if (this.unsubscribeVoiceInvites) {
             this.unsubscribeVoiceInvites();
             this.unsubscribeVoiceInvites = null;
+        }
+        if (this.unsubscribeVoiceInviteDecisions) {
+            this.unsubscribeVoiceInviteDecisions();
+            this.unsubscribeVoiceInviteDecisions = null;
         }
     }
 
@@ -383,27 +402,68 @@ export class AudioCallPanel extends React.Component {
             });
     };
 
-    handleAcceptVoiceInvite = (e) => {
-        const {incomingVoiceInvite} = this.state;
-        if (!incomingVoiceInvite) {
-            return;
-        }
-        this.clearVoiceInviteExpiryTimer();
-        if (this.isVoiceInviteExpired(incomingVoiceInvite)) {
-            this.setState({incomingVoiceInvite: null});
-            return;
-        }
-        this.setState({incomingVoiceInvite: null});
-        this.handleJoinRoom(incomingVoiceInvite.roomId, incomingVoiceInvite.roomName)(e);
-    };
-
-    handleDismissVoiceInvite = (e) => {
+    submitVoiceInviteDecision(decision, e) {
         if (e && e.preventDefault) {
             e.preventDefault();
         }
-        this.clearVoiceInviteExpiryTimer();
-        this.setState({incomingVoiceInvite: null});
-    };
+        const {incomingVoiceInvite} = this.state;
+        if (!incomingVoiceInvite) {
+            return null;
+        }
+        if (this.isVoiceInviteExpired(incomingVoiceInvite)) {
+            this.clearVoiceInviteExpiryTimer();
+            this.setState({incomingVoiceInvite: null});
+            return null;
+        }
+
+        this.setState({voiceInviteResponsePending: true, voiceInviteResponseError: ''});
+        return respondVoiceRoomInvite(incomingVoiceInvite.postId, incomingVoiceInvite.inviteId, decision).
+            then(() => {
+                if (!this.isUnmounted) {
+                    this.applyVoiceInviteDecision({invite: incomingVoiceInvite, decision});
+                }
+            }).
+            catch((error) => {
+                if (this.isUnmounted) {
+                    return;
+                }
+                const unavailable = error && error.response && (error.response.status === 409 || error.response.status === 410);
+                if (unavailable) {
+                    this.clearVoiceInviteExpiryTimer();
+                    this.setState({incomingVoiceInvite: null, voiceInviteResponsePending: false});
+                    return;
+                }
+                this.setState({
+                    voiceInviteResponsePending: false,
+                    voiceInviteResponseError: 'Could not answer this invitation.',
+                });
+            });
+    }
+
+    applyVoiceInviteDecision(result) {
+        const invite = result && result.invite;
+        const decision = result && result.decision;
+        if (!invite || !invite.inviteId) {
+            return;
+        }
+
+        const current = this.state.incomingVoiceInvite;
+        if (current && current.inviteId === invite.inviteId) {
+            this.clearVoiceInviteExpiryTimer();
+            this.setState({
+                incomingVoiceInvite: null,
+                voiceInviteResponsePending: false,
+                voiceInviteResponseError: '',
+            });
+        }
+        if (decision === VOICE_INVITE_ACCEPTED) {
+            this.handleJoinRoom(invite.roomId, invite.roomName)(null);
+        }
+    }
+
+    handleAcceptVoiceInvite = (e) => this.submitVoiceInviteDecision(VOICE_INVITE_ACCEPTED, e);
+
+    handleDismissVoiceInvite = (e) => this.submitVoiceInviteDecision(VOICE_INVITE_DECLINED, e);
 
     handlePresenceSound(change) {
         const {activeRoom} = this.state;
@@ -1316,6 +1376,8 @@ export class AudioCallPanel extends React.Component {
             openRoomMenuId,
             showInvitePicker,
             incomingVoiceInvite,
+            voiceInviteResponsePending,
+            voiceInviteResponseError,
         } = this.state;
         const style = getStyle();
 
@@ -1369,6 +1431,7 @@ export class AudioCallPanel extends React.Component {
                                     type='button'
                                     style={style.acceptInviteButton}
                                     onClick={this.handleAcceptVoiceInvite}
+                                    disabled={voiceInviteResponsePending}
                                 >
                                     {'Join'}
                                 </button>
@@ -1376,10 +1439,12 @@ export class AudioCallPanel extends React.Component {
                                     type='button'
                                     style={style.dismissInviteButton}
                                     onClick={this.handleDismissVoiceInvite}
+                                    disabled={voiceInviteResponsePending}
                                 >
                                     {'Dismiss'}
                                 </button>
                             </div>
+                            {voiceInviteResponseError && <div style={style.inviteError}>{voiceInviteResponseError}</div>}
                         </div>
                     )}
 

@@ -16,6 +16,14 @@ func inviteToVoiceRoom(p *Plugin, inviterID, targetUserID, roomID string) int {
 	}).Code
 }
 
+func respondToVoiceInvite(p *Plugin, userID, postID, inviteID, decision string) int {
+	return voiceRoomsRequest(p, http.MethodPost, "/v1/voice/invite/response", userID, map[string]string{
+		"postId":   postID,
+		"inviteId": inviteID,
+		"decision": decision,
+	}).Code
+}
+
 func TestVoiceInviteRequiresAuthenticationAndPost(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin()
 
@@ -73,5 +81,50 @@ func TestVoiceInviteIsPublishedOnlyToTarget(t *testing.T) {
 	require.True(t, ok)
 	assert.GreaterOrEqual(t, expiresAt, sentAtEarliest+voiceInviteTTLMillis)
 	assert.LessOrEqual(t, expiresAt, sentAtLatest+voiceInviteTTLMillis)
+	postID, ok := kv.webSocketPayloads[0]["postId"].(string)
+	require.True(t, ok)
+	post := kv.posts[postID]
+	require.NotNil(t, post)
+	assert.Equal(t, "inviter", post.UserId)
+	assert.Equal(t, "dm-inviter-guest", post.ChannelId)
+	assert.Equal(t, voiceInvitePostType, post.Type)
+	assert.Contains(t, post.Message, "@guest-handle")
+	assert.Contains(t, post.Message, "Standup")
 	assert.Equal(t, []string{"guest"}, kv.webSocketTargets)
+}
+
+func TestVoiceInviteResponseUpdatesDirectMessage(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "guest", "room-1"))
+
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+	assert.Equal(t, http.StatusNoContent, respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteAccepted))
+
+	updated, err := voiceInviteFromPost(kv.posts[postID])
+	require.NoError(t, err)
+	assert.Equal(t, voiceInviteAccepted, updated.Status)
+	assert.Equal(t, http.StatusNoContent, respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteAccepted))
+	assert.Equal(t, http.StatusConflict, respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteDeclined))
+}
+
+func TestVoiceInviteResponseRequiresTargetAndUnexpiredInvite(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "guest", "room-1"))
+
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+	assert.Equal(t, http.StatusForbidden, respondToVoiceInvite(p, "someone-else", postID, inviteID, voiceInviteDeclined))
+
+	invite, err := voiceInviteFromPost(kv.posts[postID])
+	require.NoError(t, err)
+	invite.ExpiresAt = model.GetMillis() - 1
+	kv.posts[postID].Props[voiceInvitePropsKey] = invite.asMap()
+	assert.Equal(t, http.StatusGone, respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteDeclined))
 }
