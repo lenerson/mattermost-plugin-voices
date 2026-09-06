@@ -343,7 +343,7 @@ describe('AudioCallPanel voice invitations', () => {
         expect(eligibleUsers[1].id).toBe('user-3');
     });
 
-    test('sends an invitation for the active room and marks it as sent', async () => {
+    test('allows sending another invitation to the same available user', async () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
@@ -354,10 +354,14 @@ describe('AudioCallPanel voice invitations', () => {
         applyStateSynchronously(panel);
         sendVoiceRoomInvite.mockResolvedValue();
 
-        await panel.handleSendVoiceInvite({id: 'user-2', username: 'guest'})({preventDefault: jest.fn()});
+        const sendInvite = panel.handleSendVoiceInvite({id: 'user-2', username: 'guest'});
+        await sendInvite({preventDefault: jest.fn()});
+        await sendInvite({preventDefault: jest.fn()});
 
-        expect(sendVoiceRoomInvite).toHaveBeenCalledWith('room-1', 'user-2');
-        expect(panel.state.invitedUserIds['user-2']).toBe(true);
+        expect(sendVoiceRoomInvite).toHaveBeenCalledTimes(2);
+        expect(sendVoiceRoomInvite).toHaveBeenNthCalledWith(1, 'room-1', 'user-2');
+        expect(sendVoiceRoomInvite).toHaveBeenNthCalledWith(2, 'room-1', 'user-2');
+        expect(panel.state.invitingUserId).toBeNull();
         expect(panel.state.inviteStatus).toBe('Invitation sent to guest.');
     });
 

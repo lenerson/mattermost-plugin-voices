@@ -362,11 +362,10 @@ export class AudioCallPanel extends React.Component {
             then(() => {
                 if (!this.isUnmounted) {
                     const name = userDisplayName(user) || user.username || 'user';
-                    this.setState((state) => ({
+                    this.setState({
                         invitingUserId: null,
-                        invitedUserIds: {...state.invitedUserIds, [user.id]: true},
                         inviteStatus: `Invitation sent to ${name}.`,
-                    }));
+                    });
                 }
             }).
             catch((error) => {
