@@ -15,7 +15,7 @@ var (
 	errVoiceInviteSelf              = errors.New("cannot invite yourself")
 	errVoiceInviteRoomNotFound      = errors.New("voice room not found")
 	errVoiceInviteSenderNotInRoom   = errors.New("inviter is not in that voice room")
-	errVoiceInviteTargetUnavailable = errors.New("invited user is already in a voice room")
+	errVoiceInviteTargetUnavailable = errors.New("invited user is already in that voice room")
 )
 
 func voiceRoomWithID(rooms []voiceRoom, roomID string) *voiceRoom {
@@ -88,7 +88,7 @@ func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 		if userVoiceRoom(presence, inviterID) != roomID {
 			return errVoiceInviteSenderNotInRoom
 		}
-		if userVoiceRoom(presence, targetUserID) != "" {
+		if userVoiceRoom(presence, targetUserID) == roomID {
 			return errVoiceInviteTargetUnavailable
 		}
 		return nil

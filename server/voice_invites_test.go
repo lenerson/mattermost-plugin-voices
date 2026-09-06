@@ -33,14 +33,23 @@ func TestVoiceInviteRequiresInviterInRequestedRoom(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, inviteToVoiceRoom(p, "inviter", "inviter", "room-1"))
 }
 
-func TestVoiceInviteRejectsUserAlreadyInAnyRoom(t *testing.T) {
+func TestVoiceInviteRejectsUserAlreadyInTargetRoom(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "busy-user", "room-1").Code)
+
+	assert.Equal(t, http.StatusConflict, inviteToVoiceRoom(p, "inviter", "busy-user", "room-1"))
+}
+
+func TestVoiceInviteAllowsUserInDifferentRoom(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin()
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-2", "Planning").Code)
 	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
 	require.Equal(t, http.StatusOK, heartbeat(p, "busy-user", "room-2").Code)
 
-	assert.Equal(t, http.StatusConflict, inviteToVoiceRoom(p, "inviter", "busy-user", "room-1"))
+	assert.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "busy-user", "room-1"))
 }
 
 func TestVoiceInviteIsPublishedOnlyToTarget(t *testing.T) {

@@ -241,12 +241,11 @@ export class AudioCallPanel extends React.Component {
             inviteSearch,
             inviteSearchHasRun,
             inviteSearchResults,
+            activeRoom,
         } = this.state;
         const source = inviteSearchHasRun ? inviteSearchResults : (this.props.profiles || []);
-        const occupiedUserIDs = new Set();
-        channelList.forEach((room) => {
-            (room.participants || []).forEach((participant) => occupiedUserIDs.add(participant.id));
-        });
+        const targetRoom = activeRoom && channelList.find((room) => room.roomId === activeRoom.roomId);
+        const targetRoomUserIDs = new Set(((targetRoom && targetRoom.participants) || []).map((participant) => participant.id));
 
         const query = inviteSearch.trim().toLowerCase();
         const seen = new Set();
@@ -255,7 +254,7 @@ export class AudioCallPanel extends React.Component {
                 return false;
             }
             seen.add(user.id);
-            if (user.id === this.props.userId || user.delete_at || user.is_bot || occupiedUserIDs.has(user.id)) {
+            if (user.id === this.props.userId || user.delete_at || user.is_bot || targetRoomUserIDs.has(user.id)) {
                 return false;
             }
             if (!query) {
@@ -356,7 +355,7 @@ export class AudioCallPanel extends React.Component {
                 const unavailable = error && error.response && error.response.status === 409;
                 this.setState({
                     invitingUserId: null,
-                    inviteError: unavailable ? 'That user has already joined a voice channel.' : 'Could not send the invitation.',
+                    inviteError: unavailable ? 'That user has already joined this voice channel.' : 'Could not send the invitation.',
                 });
                 if (unavailable) {
                     this.refreshRooms();

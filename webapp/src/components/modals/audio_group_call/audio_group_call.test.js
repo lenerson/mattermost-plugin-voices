@@ -315,7 +315,7 @@ describe('AudioCallPanel voice invitations', () => {
         sendVoiceRoomInvite.mockReset();
     });
 
-    test('lists only users who are not already in a voice room', () => {
+    test('lists users from other rooms but excludes users in the target room', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
@@ -325,17 +325,20 @@ describe('AudioCallPanel voice invitations', () => {
                 {id: 'user-3', username: 'busy'},
                 {id: 'user-4', username: 'bot', is_bot: true},
                 {id: 'user-5', username: 'deleted', delete_at: 1},
+                {id: 'user-6', username: 'same-room'},
             ],
             isSystemAdmin: false,
         });
         panel.state.channelList = [
-            {roomId: 'room-1', participants: [{id: 'user-1'}]},
+            {roomId: 'room-1', participants: [{id: 'user-1'}, {id: 'user-6'}]},
             {roomId: 'room-2', participants: [{id: 'user-3'}]},
         ];
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
 
         const eligibleUsers = panel.eligibleInviteUsers();
-        expect(eligibleUsers).toHaveLength(1);
+        expect(eligibleUsers).toHaveLength(2);
         expect(eligibleUsers[0].id).toBe('user-2');
+        expect(eligibleUsers[1].id).toBe('user-3');
     });
 
     test('sends an invitation for the active room and marks it as sent', async () => {
