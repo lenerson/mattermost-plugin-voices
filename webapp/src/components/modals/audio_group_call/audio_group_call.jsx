@@ -151,6 +151,9 @@ export class AudioCallPanel extends React.Component {
         this.unsubscribeVoiceInviteDecisions = null;
         this.voiceInviteExpiryTimer = null;
         this.inviteSearchRequestId = 0;
+        this.invitePickerRef = React.createRef();
+        this.inviteButtonRef = React.createRef();
+        this.invitePickerOutsideListening = false;
     }
 
     componentDidMount() {
@@ -161,8 +164,13 @@ export class AudioCallPanel extends React.Component {
         this.bootstrapDirectory();
     }
 
+    componentDidUpdate() {
+        this.syncInvitePickerOutsideListener();
+    }
+
     componentWillUnmount() {
         this.isUnmounted = true;
+        this.removeInvitePickerOutsideListener();
         this.stopPresence();
         this.cleanupConnection(() => {
             /* sync teardown */
@@ -314,9 +322,13 @@ export class AudioCallPanel extends React.Component {
         if (!this.state.activeRoom) {
             return;
         }
+        if (this.state.showInvitePicker) {
+            this.closeInvitePicker();
+            return;
+        }
         this.inviteSearchRequestId += 1;
-        this.setState((state) => ({
-            showInvitePicker: !state.showInvitePicker,
+        this.setState({
+            showInvitePicker: true,
             inviteSearch: '',
             inviteSearchResults: [],
             inviteSearchHasRun: false,
@@ -324,8 +336,59 @@ export class AudioCallPanel extends React.Component {
             inviteError: '',
             inviteStatus: '',
             openRoomMenuId: null,
-        }));
+        });
     };
+
+    closeInvitePicker() {
+        this.inviteSearchRequestId += 1;
+        this.setState({
+            showInvitePicker: false,
+            inviteSearch: '',
+            inviteSearchResults: [],
+            inviteSearchHasRun: false,
+            inviteSearchPending: false,
+            inviteError: '',
+            inviteStatus: '',
+            invitingUserId: null,
+        });
+    }
+
+    handleCloseInvitePicker = (e) => {
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        this.closeInvitePicker();
+    };
+
+    handleInvitePickerOutsideClick = (e) => {
+        const target = e && e.target;
+        const picker = this.invitePickerRef.current;
+        const inviteButton = this.inviteButtonRef.current;
+        if (!this.state.showInvitePicker || !target || (picker && picker.contains(target)) || (inviteButton && inviteButton.contains(target))) {
+            return;
+        }
+        this.closeInvitePicker();
+    };
+
+    syncInvitePickerOutsideListener() {
+        if (this.state.showInvitePicker && !this.invitePickerOutsideListening) {
+            document.addEventListener('mousedown', this.handleInvitePickerOutsideClick);
+            this.invitePickerOutsideListening = true;
+        } else if (!this.state.showInvitePicker && this.invitePickerOutsideListening) {
+            this.removeInvitePickerOutsideListener();
+        }
+    }
+
+    removeInvitePickerOutsideListener() {
+        if (!this.invitePickerOutsideListening) {
+            return;
+        }
+        document.removeEventListener('mousedown', this.handleInvitePickerOutsideClick);
+        this.invitePickerOutsideListening = false;
+    }
 
     handleInviteSearchChange = (e) => {
         const inviteSearch = e.target.value;
@@ -1221,6 +1284,7 @@ export class AudioCallPanel extends React.Component {
                     </span>
                     <span style={style.inRoomHeaderActions}>
                         <button
+                            ref={this.inviteButtonRef}
                             type='button'
                             style={{...style.roomSettingsBtn, ...style.inviteButton}}
                             onClick={this.handleToggleInvitePicker}
@@ -1287,11 +1351,26 @@ export class AudioCallPanel extends React.Component {
                 </div>
                 {showInvitePicker && (
                     <div
+                        ref={this.invitePickerRef}
                         role='dialog'
                         aria-label={`Invite a user to ${room.name}`}
                         style={style.invitePicker}
                     >
-                        <strong style={style.inviteTitle}>{`Invite to ${room.name}`}</strong>
+                        <div style={style.inviteHeader}>
+                            <strong style={style.inviteTitle}>{`Invite to ${room.name}`}</strong>
+                            <button
+                                type='button'
+                                style={style.inviteCloseButton}
+                                onClick={this.handleCloseInvitePicker}
+                                title='Close invitation picker'
+                                aria-label='Close invitation picker'
+                            >
+                                <i
+                                    className='icon fa fa-times'
+                                    aria-hidden='true'
+                                />
+                            </button>
+                        </div>
                         <input
                             type='search'
                             autoFocus={true}
@@ -1832,9 +1911,29 @@ const getStyle = () => ({
         color: '#fff',
     },
     inviteTitle: {
-        display: 'block',
-        marginBottom: 8,
         fontSize: '0.9em',
+    },
+    inviteHeader: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        marginBottom: 8,
+    },
+    inviteCloseButton: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        width: 24,
+        height: 24,
+        padding: 0,
+        border: 'none',
+        borderRadius: 3,
+        background: 'transparent',
+        color: '#fff',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
     },
     inviteSearchInput: {
         width: '100%',

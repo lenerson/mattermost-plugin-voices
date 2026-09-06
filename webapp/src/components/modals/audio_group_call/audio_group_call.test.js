@@ -388,6 +388,51 @@ describe('AudioCallPanel voice invitations', () => {
         expect(inviteButton.props.children.props.className).toBe('icon fa fa-user-plus');
     });
 
+    test('closes the invitation picker from its close icon', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.channelList = [{roomId: 'room-1', name: 'Standup', participants: [{id: 'user-1'}]}];
+        panel.state.showInvitePicker = true;
+        applyStateSynchronously(panel);
+
+        const rendered = panel.render();
+        const closeButton = findElements(rendered, hasAriaLabel('Close invitation picker'))[0];
+        const event = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
+        closeButton.props.onClick(event);
+
+        expect(closeButton.props.children.props.className).toBe('icon fa fa-times');
+        expect(event.preventDefault).toHaveBeenCalledTimes(1);
+        expect(event.stopPropagation).toHaveBeenCalledTimes(1);
+        expect(panel.state.showInvitePicker).toBe(false);
+    });
+
+    test('closes the invitation picker only when clicking outside it', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        const insideTarget = {};
+        const outsideTarget = {};
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.showInvitePicker = true;
+        panel.invitePickerRef.current = {contains: (target) => target === insideTarget};
+        panel.inviteButtonRef.current = {contains: () => false};
+        applyStateSynchronously(panel);
+
+        panel.handleInvitePickerOutsideClick({target: insideTarget});
+        expect(panel.state.showInvitePicker).toBe(true);
+
+        panel.handleInvitePickerOutsideClick({target: outsideTarget});
+        expect(panel.state.showInvitePicker).toBe(false);
+    });
+
     test('shows a targeted invitation and joins its room when accepted', async () => {
         const panel = new AudioCallPanel({
             userId: 'user-2',
