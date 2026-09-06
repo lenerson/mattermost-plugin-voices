@@ -9,7 +9,10 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-const voiceInviteEvent = "voice_invite"
+const (
+	voiceInviteEvent     = "voice_invite"
+	voiceInviteTTLMillis = 5 * 60 * 1000
+)
 
 var (
 	errVoiceInviteSelf              = errors.New("cannot invite yourself")
@@ -109,6 +112,7 @@ func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 	payload := map[string]interface{}{
 		"roomId":           room.RoomID,
 		"roomName":         room.Name,
+		"expiresAt":        model.GetMillis() + voiceInviteTTLMillis,
 		"inviterId":        inviterID,
 		"inviterUsername":  "",
 		"inviterFirstName": "",

@@ -23,6 +23,8 @@ import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/vo
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
 
+const VOICE_INVITE_TTL_MS = 5 * 60 * 1000;
+
 function captureCleanupCallback(holder) {
     return (callback) => {
         holder.finish = callback;
@@ -378,6 +380,7 @@ describe('AudioCallPanel voice invitations', () => {
             roomName: 'Standup',
             inviterId: 'user-1',
             inviterUsername: 'host',
+            expiresAt: Date.now() + VOICE_INVITE_TTL_MS,
         });
 
         expect(panel.state.incomingVoiceInvite).toEqual(expect.objectContaining({roomId: 'room-1'}));
@@ -391,6 +394,42 @@ describe('AudioCallPanel voice invitations', () => {
         expect(panel.state.incomingVoiceInvite).toBeNull();
 
         panel.stopVoiceInviteEvents();
+    });
+
+    test('ignores expired invitations and automatically dismisses active ones after five minutes', () => {
+        jest.useFakeTimers();
+        const panel = new AudioCallPanel({
+            userId: 'user-2',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        applyStateSynchronously(panel);
+        panel.startVoiceInviteEvents();
+
+        emitVoiceInvite({
+            roomId: 'room-expired',
+            roomName: 'Expired',
+            inviterId: 'user-1',
+            expiresAt: Date.now() - 1,
+        });
+        expect(panel.state.incomingVoiceInvite).toBeNull();
+
+        emitVoiceInvite({
+            roomId: 'room-1',
+            roomName: 'Standup',
+            inviterId: 'user-1',
+            expiresAt: Date.now() + VOICE_INVITE_TTL_MS,
+        });
+        expect(panel.state.incomingVoiceInvite).toEqual(expect.objectContaining({roomId: 'room-1'}));
+
+        jest.advanceTimersByTime(VOICE_INVITE_TTL_MS - 1);
+        expect(panel.state.incomingVoiceInvite).not.toBeNull();
+        jest.advanceTimersByTime(1);
+        expect(panel.state.incomingVoiceInvite).toBeNull();
+
+        panel.stopVoiceInviteEvents();
+        jest.useRealTimers();
     });
 });
 

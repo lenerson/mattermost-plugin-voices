@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -60,11 +61,17 @@ func TestVoiceInviteIsPublishedOnlyToTarget(t *testing.T) {
 	kv.webSocketPayloads = nil
 	kv.webSocketTargets = nil
 
+	sentAtEarliest := model.GetMillis()
 	assert.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "guest", "room-1"))
+	sentAtLatest := model.GetMillis()
 	require.Equal(t, []string{voiceInviteEvent}, kv.webSocketEvents)
 	require.Len(t, kv.webSocketPayloads, 1)
 	assert.Equal(t, "room-1", kv.webSocketPayloads[0]["roomId"])
 	assert.Equal(t, "Standup", kv.webSocketPayloads[0]["roomName"])
 	assert.Equal(t, "inviter", kv.webSocketPayloads[0]["inviterId"])
+	expiresAt, ok := kv.webSocketPayloads[0]["expiresAt"].(int64)
+	require.True(t, ok)
+	assert.GreaterOrEqual(t, expiresAt, sentAtEarliest+voiceInviteTTLMillis)
+	assert.LessOrEqual(t, expiresAt, sentAtLatest+voiceInviteTTLMillis)
 	assert.Equal(t, []string{"guest"}, kv.webSocketTargets)
 }

@@ -146,6 +146,7 @@ export class AudioCallPanel extends React.Component {
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
         this.unsubscribeVoiceInvites = null;
+        this.voiceInviteExpiryTimer = null;
         this.inviteSearchRequestId = 0;
     }
 
@@ -212,19 +213,39 @@ export class AudioCallPanel extends React.Component {
     startVoiceInviteEvents() {
         if (!this.unsubscribeVoiceInvites) {
             this.unsubscribeVoiceInvites = subscribeVoiceInvites((invite) => {
-                if (!invite.roomId || !invite.roomName || !invite.inviterId || invite.inviterId === this.props.userId) {
+                if (!invite.roomId || !invite.roomName || !invite.inviterId || invite.inviterId === this.props.userId || this.isVoiceInviteExpired(invite)) {
                     return;
                 }
+                this.clearVoiceInviteExpiryTimer();
                 this.setState({incomingVoiceInvite: invite});
+                this.voiceInviteExpiryTimer = setTimeout(() => {
+                    this.voiceInviteExpiryTimer = null;
+                    if (!this.isUnmounted && this.state.incomingVoiceInvite === invite) {
+                        this.setState({incomingVoiceInvite: null});
+                    }
+                }, Number(invite.expiresAt) - Date.now());
             });
         }
     }
 
     stopVoiceInviteEvents() {
+        this.clearVoiceInviteExpiryTimer();
         if (this.unsubscribeVoiceInvites) {
             this.unsubscribeVoiceInvites();
             this.unsubscribeVoiceInvites = null;
         }
+    }
+
+    clearVoiceInviteExpiryTimer() {
+        if (this.voiceInviteExpiryTimer) {
+            clearTimeout(this.voiceInviteExpiryTimer);
+            this.voiceInviteExpiryTimer = null;
+        }
+    }
+
+    isVoiceInviteExpired(invite) {
+        const expiresAt = Number(invite && invite.expiresAt);
+        return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
     }
 
     voiceInviteDisplayName(invite) {
@@ -368,6 +389,11 @@ export class AudioCallPanel extends React.Component {
         if (!incomingVoiceInvite) {
             return;
         }
+        this.clearVoiceInviteExpiryTimer();
+        if (this.isVoiceInviteExpired(incomingVoiceInvite)) {
+            this.setState({incomingVoiceInvite: null});
+            return;
+        }
         this.setState({incomingVoiceInvite: null});
         this.handleJoinRoom(incomingVoiceInvite.roomId, incomingVoiceInvite.roomName)(e);
     };
@@ -376,6 +402,7 @@ export class AudioCallPanel extends React.Component {
         if (e && e.preventDefault) {
             e.preventDefault();
         }
+        this.clearVoiceInviteExpiryTimer();
         this.setState({incomingVoiceInvite: null});
     };
 
