@@ -1286,7 +1286,7 @@ export class AudioCallPanel extends React.Component {
                         <button
                             ref={this.inviteButtonRef}
                             type='button'
-                            style={{...style.roomSettingsBtn, ...style.inviteButton}}
+                            style={{...style.voiceControlButton, ...style.inviteButton}}
                             onClick={this.handleToggleInvitePicker}
                             title='Invite a user to this voice channel'
                             aria-label={`Invite users to voice channel ${room.name}`}
@@ -1411,7 +1411,7 @@ export class AudioCallPanel extends React.Component {
                                                         aria-label={`Invite ${displayName} to ${room.name}`}
                                                     >
                                                         <i
-                                                            className={isSending ? 'icon fa fa-spinner fa-spin' : 'icon fa fa-user-plus'}
+                                                            className={isSending ? 'icon fa fa-spinner fa-spin' : 'icon fa fa-paper-plane'}
                                                             aria-hidden='true'
                                                         />
                                                     </button>
@@ -1868,8 +1868,8 @@ const getStyle = () => ({
     },
     inviteButton: {
         flexShrink: 0,
-        background: 'rgba(91,156,248,0.18)',
-        color: '#b9d6ff',
+        background: 'transparent',
+        color: '#fff',
     },
     roomMenu: {
         position: 'absolute',
@@ -1900,9 +1900,11 @@ const getStyle = () => ({
         position: 'absolute',
         top: 38,
         right: 0,
+        left: 'auto',
         zIndex: 4,
         width: 280,
-        maxWidth: 'calc(100vw - 32px)',
+        maxWidth: '100%',
+        boxSizing: 'border-box',
         padding: 10,
         border: '1px solid rgba(255,255,255,0.14)',
         borderRadius: 4,

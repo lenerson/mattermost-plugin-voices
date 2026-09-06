@@ -212,7 +212,9 @@ describe('AudioCallPanel room directory', () => {
         const activeHeader = findElements(rendered, hasRoleAndAriaLabel('group', 'Voice channel Standup controls'))[0];
         expect(findElements(activeHeader, hasAriaLabel('Enable microphone'))).toHaveLength(1);
         expect(findElements(activeHeader, hasAriaLabel('Disable voice channel audio'))).toHaveLength(1);
-        expect(findElements(rendered, hasAriaLabel('Invite users to voice channel Standup'))).toHaveLength(1);
+        const inviteControl = findElements(rendered, hasAriaLabel('Invite users to voice channel Standup'))[0];
+        expect(inviteControl.props.style.background).toBe('transparent');
+        expect(inviteControl.props.style.border).toBe('none');
         expect(findElements(rendered, hasAriaLabel('Join voice channel Planning'))).toHaveLength(1);
         expect(findElements(rendered, hasAriaLabel('Join voice channel Standup'))).toHaveLength(0);
         expect(findElements(rendered, hasAriaLabel('Voice channel settings for Standup'))).toHaveLength(1);
@@ -385,7 +387,7 @@ describe('AudioCallPanel voice invitations', () => {
 
         expect(inviteButton).toBeDefined();
         expect(inviteButton.props.children.type).toBe('i');
-        expect(inviteButton.props.children.props.className).toBe('icon fa fa-user-plus');
+        expect(inviteButton.props.children.props.className).toBe('icon fa fa-paper-plane');
     });
 
     test('closes the invitation picker from its close icon', () => {
@@ -401,10 +403,15 @@ describe('AudioCallPanel voice invitations', () => {
         applyStateSynchronously(panel);
 
         const rendered = panel.render();
+        const picker = findElements(rendered, hasRoleAndAriaLabel('dialog', 'Invite a user to Standup'))[0];
         const closeButton = findElements(rendered, hasAriaLabel('Close invitation picker'))[0];
         const event = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
         closeButton.props.onClick(event);
 
+        expect(picker.props.style.right).toBe(0);
+        expect(picker.props.style.left).toBe('auto');
+        expect(picker.props.style.maxWidth).toBe('100%');
+        expect(picker.props.style.boxSizing).toBe('border-box');
         expect(closeButton.props.children.props.className).toBe('icon fa fa-times');
         expect(event.preventDefault).toHaveBeenCalledTimes(1);
         expect(event.stopPropagation).toHaveBeenCalledTimes(1);
