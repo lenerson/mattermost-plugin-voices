@@ -223,6 +223,28 @@ describe('AudioCallPanel room directory', () => {
         expect(findElements(rendered, hasText('You are connected, with your microphone muted.'))).toHaveLength(0);
     });
 
+    test('keeps the active room in its original directory position', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-2', name: 'Planning'};
+        panel.state.channelList = [
+            {roomId: 'room-1', name: 'Standup', participants: []},
+            {roomId: 'room-2', name: 'Planning', participants: []},
+            {roomId: 'room-3', name: 'Support', participants: []},
+        ];
+
+        const rendered = panel.render();
+        const roomRows = findElements(rendered, (element) => element.type === 'li' && element.props.onMouseEnter);
+
+        expect(roomRows).toHaveLength(3);
+        expect(findElements(roomRows[0], hasAriaLabel('Join voice channel Standup'))).toHaveLength(1);
+        expect(findElements(roomRows[1], hasRoleAndAriaLabel('group', 'Voice channel Planning controls'))).toHaveLength(1);
+        expect(findElements(roomRows[2], hasAriaLabel('Join voice channel Support'))).toHaveLength(1);
+    });
+
     test('finishes closing the current room before joining another one', () => {
         const cleanup = {};
         const panel = new AudioCallPanel({
