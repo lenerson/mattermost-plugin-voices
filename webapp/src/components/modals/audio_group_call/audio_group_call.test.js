@@ -408,9 +408,10 @@ describe('AudioCallPanel voice invitations', () => {
         const event = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
         closeButton.props.onClick(event);
 
-        expect(picker.props.style.right).toBe(0);
-        expect(picker.props.style.left).toBe('auto');
-        expect(picker.props.style.maxWidth).toBe('100%');
+        expect(picker.props.style.right).toBe('auto');
+        expect(picker.props.style.left).toBe('calc(100% + 10px)');
+        expect(picker.props.style.width).toBe(280);
+        expect(picker.props.style.maxWidth).toBe('calc(100vw - 32px)');
         expect(picker.props.style.boxSizing).toBe('border-box');
         expect(closeButton.props.children.props.className).toBe('icon fa fa-times');
         expect(event.preventDefault).toHaveBeenCalledTimes(1);
