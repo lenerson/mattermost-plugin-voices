@@ -302,7 +302,7 @@ describe('AudioCallPanel room sounds', () => {
         playVoiceRoomLeaveSound.mockClear();
     });
 
-    test('plays join and leave sounds for the current user and room peers', () => {
+    test('plays join and leave sounds only for participants in the active room', () => {
         const panel = new AudioCallPanel({
             userId: 'user-1',
             profilesById: {},
@@ -315,11 +315,26 @@ describe('AudioCallPanel room sounds', () => {
         expect(playVoiceRoomJoinSound).toHaveBeenCalledTimes(1);
         expect(playVoiceRoomLeaveSound).toHaveBeenCalledTimes(1);
 
-        panel.state.activeRoom = null;
-        panel.handlePresenceSound({userId: 'user-1', previousRoomId: 'room-1', roomId: ''});
         panel.handlePresenceSound({userId: 'user-1', previousRoomId: '', roomId: 'room-1'});
+        panel.handlePresenceSound({userId: 'user-1', previousRoomId: 'room-1', roomId: ''});
         expect(playVoiceRoomJoinSound).toHaveBeenCalledTimes(2);
         expect(playVoiceRoomLeaveSound).toHaveBeenCalledTimes(2);
+    });
+
+    test('plays the departure sound locally before clearing the active room', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.clearPresence = jest.fn();
+        panel.cleanupConnection = jest.fn();
+        panel.resetActiveRoomState = jest.fn();
+
+        panel.leaveRoomInternal();
+
+        expect(playVoiceRoomLeaveSound).toHaveBeenCalledTimes(1);
     });
 
     test('does not play sounds for microphone changes or unrelated rooms', () => {
@@ -333,6 +348,7 @@ describe('AudioCallPanel room sounds', () => {
         panel.handlePresenceSound({userId: 'user-2', previousRoomId: 'room-1', roomId: 'room-1', audioOn: false});
         panel.handlePresenceSound({userId: 'user-3', previousRoomId: '', roomId: 'room-2'});
         panel.handlePresenceSound({userId: 'user-4', previousRoomId: 'room-2', roomId: ''});
+        panel.handlePresenceSound({userId: 'user-1', previousRoomId: 'room-2', roomId: 'room-3'});
 
         expect(playVoiceRoomJoinSound).not.toHaveBeenCalled();
         expect(playVoiceRoomLeaveSound).not.toHaveBeenCalled();
@@ -467,6 +483,7 @@ describe('AudioCallPanel leaving a room', () => {
         const panel = {
             connectPending: true,
             isUnmounted: false,
+            state: {activeRoom: {roomId: 'room-1', name: 'Standup'}},
             clearPresence: jest.fn(),
             cleanupConnection: jest.fn(captureCleanupCallback(cleanup)),
             setState: jest.fn(),

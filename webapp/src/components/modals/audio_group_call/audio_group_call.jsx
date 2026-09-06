@@ -193,14 +193,14 @@ export class AudioCallPanel extends React.Component {
 
     handlePresenceSound(change) {
         const {activeRoom} = this.state;
-        const isCurrentUser = change.userId === this.props.userId;
+        const activeRoomID = activeRoom ? activeRoom.roomId : '';
         const joinedRoomID = change.roomId && change.roomId !== change.previousRoomId ? change.roomId : '';
         const leftRoomID = change.previousRoomId && change.previousRoomId !== change.roomId ? change.previousRoomId : '';
 
-        if (joinedRoomID && (isCurrentUser || (activeRoom && activeRoom.roomId === joinedRoomID))) {
+        if (joinedRoomID && activeRoomID === joinedRoomID) {
             playVoiceRoomJoinSound();
         }
-        if (leftRoomID && (isCurrentUser || (activeRoom && activeRoom.roomId === leftRoomID))) {
+        if (leftRoomID && activeRoomID === leftRoomID) {
             playVoiceRoomLeaveSound();
         }
     }
@@ -481,6 +481,10 @@ export class AudioCallPanel extends React.Component {
         this.roomTransitionId += 1;
         this.connectPending = false;
 
+        if (this.state.activeRoom) {
+            playVoiceRoomLeaveSound();
+        }
+
         // Presence and local UI must change immediately. Closing a WebRTC swarm
         // is asynchronous and its callback may take long enough for the user to
         // believe they are still in the room.
@@ -514,6 +518,9 @@ export class AudioCallPanel extends React.Component {
         const {activeRoom} = this.state;
         if (activeRoom && activeRoom.roomId === roomId) {
             return;
+        }
+        if (activeRoom) {
+            playVoiceRoomLeaveSound();
         }
 
         const transitionId = ++this.roomTransitionId;
