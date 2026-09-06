@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.10 - 2026-09-05
+
+### Fixed
+- The active voice channel now remains in its original directory position while connected.
+- Join and leave sounds are limited to the participant performing the action and other participants in the affected room; activity in unrelated rooms remains silent.
+
 ## 2.4.9 - 2026-09-05
 
 ### Changed
