@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](http://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html).
 
+## 2.4.11 - 2026-09-05
+
+### Added
+- Voice-channel participants can invite users through a targeted real-time notification with join and dismiss actions.
+- Invitations expire automatically five minutes after they are sent.
+
+### Changed
+- Users connected to another voice channel remain eligible for invitations; accepting an invitation moves them exclusively to the destination channel.
+
 ## 2.4.10 - 2026-09-05
 
 ### Fixed
