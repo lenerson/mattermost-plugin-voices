@@ -7,6 +7,7 @@ jest.mock('../../../utils/voiceRoomsApi', () => ({
     sendVoicePresence: jest.fn(),
 }));
 jest.mock('../../../utils/voiceRoomSounds', () => ({
+    playVoiceRoomInviteSound: jest.fn(),
     playVoiceRoomJoinSound: jest.fn(),
     playVoiceRoomLeaveSound: jest.fn(),
 }));
@@ -19,7 +20,7 @@ import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
 import {sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
 import {emitVoiceInvite} from '../../../utils/voiceInviteEvents';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
-import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
+import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
 
@@ -315,6 +316,7 @@ describe('AudioCallPanel room directory', () => {
 describe('AudioCallPanel voice invitations', () => {
     beforeEach(() => {
         sendVoiceRoomInvite.mockReset();
+        playVoiceRoomInviteSound.mockClear();
     });
 
     test('lists users from other rooms but excludes users in the target room', () => {
@@ -407,6 +409,7 @@ describe('AudioCallPanel voice invitations', () => {
         });
 
         expect(panel.state.incomingVoiceInvite).toEqual(expect.objectContaining({roomId: 'room-1'}));
+        expect(playVoiceRoomInviteSound).toHaveBeenCalledTimes(1);
         const rendered = panel.render();
         expect(findElements(rendered, (element) => element.props && element.props.role === 'alert')).toHaveLength(1);
 
@@ -437,6 +440,7 @@ describe('AudioCallPanel voice invitations', () => {
             expiresAt: Date.now() - 1,
         });
         expect(panel.state.incomingVoiceInvite).toBeNull();
+        expect(playVoiceRoomInviteSound).not.toHaveBeenCalled();
 
         emitVoiceInvite({
             roomId: 'room-1',
@@ -445,6 +449,7 @@ describe('AudioCallPanel voice invitations', () => {
             expiresAt: Date.now() + VOICE_INVITE_TTL_MS,
         });
         expect(panel.state.incomingVoiceInvite).toEqual(expect.objectContaining({roomId: 'room-1'}));
+        expect(playVoiceRoomInviteSound).toHaveBeenCalledTimes(1);
 
         jest.advanceTimersByTime(VOICE_INVITE_TTL_MS - 1);
         expect(panel.state.incomingVoiceInvite).not.toBeNull();

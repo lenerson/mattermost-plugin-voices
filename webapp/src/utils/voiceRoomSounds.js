@@ -10,6 +10,7 @@ const MILLISECONDS_PER_SECOND = 1000;
 
 const JOIN_FREQUENCIES = [523.25, 659.25];
 const LEAVE_FREQUENCIES = [659.25, 392.00];
+const INVITE_FREQUENCIES = [659.25, 783.99, 987.77];
 
 function closeContextLater(context, toneCount) {
     const sequenceSeconds = (toneCount * TONE_STEP_SECONDS) + CLOSE_PADDING_SECONDS;
@@ -71,4 +72,8 @@ export function playVoiceRoomJoinSound() {
 
 export function playVoiceRoomLeaveSound() {
     playSequence(LEAVE_FREQUENCIES);
+}
+
+export function playVoiceRoomInviteSound() {
+    playSequence(INVITE_FREQUENCIES);
 }

@@ -1,4 +1,4 @@
-import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from './voiceRoomSounds';
+import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from './voiceRoomSounds';
 
 const contexts = [];
 
@@ -65,5 +65,12 @@ describe('voiceRoomSounds', () => {
 
         expect(contexts).toHaveLength(1);
         expect(oscillatorFrequencies(contexts[0])).toEqual([659.25, 392.00]);
+    });
+
+    test('uses a distinct ascending chime for an invitation', () => {
+        playVoiceRoomInviteSound();
+
+        expect(contexts).toHaveLength(1);
+        expect(oscillatorFrequencies(contexts[0])).toEqual([659.25, 783.99, 987.77]);
     });
 });

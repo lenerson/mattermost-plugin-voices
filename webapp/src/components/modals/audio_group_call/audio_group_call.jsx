@@ -15,7 +15,7 @@ import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} fr
 import {searchVoiceInviteUsers, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
 import {subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
-import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
+import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -216,6 +216,7 @@ export class AudioCallPanel extends React.Component {
                     return;
                 }
                 this.clearVoiceInviteExpiryTimer();
+                playVoiceRoomInviteSound();
                 this.setState({incomingVoiceInvite: invite});
                 this.voiceInviteExpiryTimer = setTimeout(() => {
                     this.voiceInviteExpiryTimer = null;
