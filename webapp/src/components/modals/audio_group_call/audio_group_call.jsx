@@ -133,7 +133,6 @@ export class AudioCallPanel extends React.Component {
             inviteError: '',
             inviteStatus: '',
             invitingUserId: null,
-            invitedUserIds: {},
             incomingVoiceInvite: null,
         };
 
@@ -678,7 +677,6 @@ export class AudioCallPanel extends React.Component {
                 inviteError: '',
                 inviteStatus: '',
                 invitingUserId: null,
-                invitedUserIds: {},
             });
         }
     }
@@ -778,7 +776,6 @@ export class AudioCallPanel extends React.Component {
                 inviteError: '',
                 inviteStatus: '',
                 invitingUserId: null,
-                invitedUserIds: {},
             }, () => {
                 if (transitionId === this.roomTransitionId) {
                     this.startPresence(roomId);
@@ -1132,7 +1129,6 @@ export class AudioCallPanel extends React.Component {
             inviteError,
             inviteStatus,
             invitingUserId,
-            invitedUserIds,
         } = this.state;
         const style = getStyle();
         const eligibleUsers = this.eligibleInviteUsers();
@@ -1255,28 +1251,29 @@ export class AudioCallPanel extends React.Component {
                                 ) : (
                                     <ul style={style.inviteUserList}>
                                         {eligibleUsers.map((user) => {
-                                            const alreadyInvited = Boolean(invitedUserIds[user.id]);
-                                            let actionLabel = 'Invite';
-                                            if (alreadyInvited) {
-                                                actionLabel = 'Sent';
-                                            } else if (invitingUserId === user.id) {
-                                                actionLabel = 'Sending...';
-                                            }
+                                            const displayName = userDisplayName(user) || user.username;
+                                            const isSending = invitingUserId === user.id;
                                             return (
-                                                <li key={user.id}>
+                                                <li
+                                                    key={user.id}
+                                                    style={style.inviteUserRow}
+                                                >
+                                                    <span style={style.inviteUserIdentity}>
+                                                        <strong>{displayName}</strong>
+                                                        <span style={style.inviteUsername}>{`@${user.username}`}</span>
+                                                    </span>
                                                     <button
                                                         type='button'
-                                                        style={alreadyInvited || invitingUserId ? {...style.inviteUserButton, ...style.inviteUserButtonDisabled} : style.inviteUserButton}
+                                                        style={invitingUserId ? {...style.inviteUserIconButton, ...style.inviteUserButtonDisabled} : style.inviteUserIconButton}
                                                         onClick={this.handleSendVoiceInvite(user)}
-                                                        disabled={alreadyInvited || Boolean(invitingUserId)}
+                                                        disabled={Boolean(invitingUserId)}
+                                                        title={`Invite ${displayName}`}
+                                                        aria-label={`Invite ${displayName} to ${room.name}`}
                                                     >
-                                                        <span style={style.inviteUserIdentity}>
-                                                            <strong>{userDisplayName(user) || user.username}</strong>
-                                                            <span style={style.inviteUsername}>{`@${user.username}`}</span>
-                                                        </span>
-                                                        <span style={style.inviteUserAction}>
-                                                            {actionLabel}
-                                                        </span>
+                                                        <i
+                                                            className={isSending ? 'icon fa fa-spinner fa-spin' : 'icon fa fa-user-plus'}
+                                                            aria-hidden='true'
+                                                        />
                                                     </button>
                                                 </li>
                                             );
@@ -1791,19 +1788,26 @@ const getStyle = () => ({
         maxHeight: 190,
         overflowY: 'auto',
     },
-    inviteUserButton: {
+    inviteUserRow: {
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 8,
-        width: '100%',
         padding: '7px 8px',
+    },
+    inviteUserIconButton: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+        width: 26,
+        height: 26,
+        padding: 0,
         border: 'none',
         borderRadius: 3,
-        background: 'transparent',
-        color: '#fff',
+        background: 'rgba(91,156,248,0.18)',
+        color: '#b9d6ff',
         cursor: 'pointer',
-        textAlign: 'left',
         fontFamily: 'inherit',
     },
     inviteUserButtonDisabled: {
@@ -1813,18 +1817,13 @@ const getStyle = () => ({
     inviteUserIdentity: {
         display: 'flex',
         flexDirection: 'column',
+        flex: 1,
         minWidth: 0,
     },
     inviteUsername: {
         marginTop: 1,
         color: 'rgba(255,255,255,0.55)',
         fontSize: '0.8em',
-    },
-    inviteUserAction: {
-        flexShrink: 0,
-        color: '#9dc5ff',
-        fontSize: '0.8em',
-        fontWeight: 600,
     },
     inviteEmpty: {
         padding: '10px 2px 2px',

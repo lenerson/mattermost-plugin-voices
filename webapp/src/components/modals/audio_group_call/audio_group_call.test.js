@@ -365,6 +365,25 @@ describe('AudioCallPanel voice invitations', () => {
         expect(panel.state.inviteStatus).toBe('Invitation sent to guest.');
     });
 
+    test('renders each user invitation action as an icon-only button', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            profiles: [{id: 'user-2', username: 'guest'}],
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        panel.state.channelList = [{roomId: 'room-1', name: 'Standup', participants: [{id: 'user-1'}]}];
+        panel.state.showInvitePicker = true;
+
+        const rendered = panel.render();
+        const inviteButton = findElements(rendered, hasAriaLabel('Invite guest to Standup'))[0];
+
+        expect(inviteButton).toBeDefined();
+        expect(inviteButton.props.children.type).toBe('i');
+        expect(inviteButton.props.children.props.className).toBe('icon fa fa-user-plus');
+    });
+
     test('shows a targeted invitation and joins its room when accepted', () => {
         const panel = new AudioCallPanel({
             userId: 'user-2',
