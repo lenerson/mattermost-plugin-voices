@@ -12,6 +12,8 @@ import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
 import {createVoiceRoom, deleteVoiceRoom, fetchVoiceRooms, sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {searchVoiceInviteUsers, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
+import {subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import {id as pluginId} from 'manifest';
@@ -68,6 +70,7 @@ export class AudioCallPanel extends React.Component {
         config: PropTypes.object,
         isSystemAdmin: PropTypes.bool,
         displayName: PropTypes.string,
+        profiles: PropTypes.array,
         profilesById: PropTypes.object,
     };
 
@@ -122,6 +125,16 @@ export class AudioCallPanel extends React.Component {
             showCreateInput: false,
             hoveredRoomId: null,
             openRoomMenuId: null,
+            showInvitePicker: false,
+            inviteSearch: '',
+            inviteSearchResults: [],
+            inviteSearchHasRun: false,
+            inviteSearchPending: false,
+            inviteError: '',
+            inviteStatus: '',
+            invitingUserId: null,
+            invitedUserIds: {},
+            incomingVoiceInvite: null,
         };
 
         this.swarmInstance = null;
@@ -132,12 +145,15 @@ export class AudioCallPanel extends React.Component {
         this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
+        this.unsubscribeVoiceInvites = null;
+        this.inviteSearchRequestId = 0;
     }
 
     componentDidMount() {
         // The directory no longer depends on the client config: it is a plugin
         // endpoint of its own, so it loads even before /v1/config comes back.
         this.startDirectoryEvents();
+        this.startVoiceInviteEvents();
         this.bootstrapDirectory();
     }
 
@@ -148,6 +164,8 @@ export class AudioCallPanel extends React.Component {
             /* sync teardown */
         });
         this.stopDirectoryEvents();
+        this.stopVoiceInviteEvents();
+        this.inviteSearchRequestId += 1;
         this.stopDirectory();
     }
 
@@ -190,6 +208,177 @@ export class AudioCallPanel extends React.Component {
             this.unsubscribeDirectoryEvents = null;
         }
     }
+
+    startVoiceInviteEvents() {
+        if (!this.unsubscribeVoiceInvites) {
+            this.unsubscribeVoiceInvites = subscribeVoiceInvites((invite) => {
+                if (!invite.roomId || !invite.roomName || !invite.inviterId || invite.inviterId === this.props.userId) {
+                    return;
+                }
+                this.setState({incomingVoiceInvite: invite});
+            });
+        }
+    }
+
+    stopVoiceInviteEvents() {
+        if (this.unsubscribeVoiceInvites) {
+            this.unsubscribeVoiceInvites();
+            this.unsubscribeVoiceInvites = null;
+        }
+    }
+
+    voiceInviteDisplayName(invite) {
+        return userDisplayName({
+            first_name: invite.inviterFirstName,
+            last_name: invite.inviterLastName,
+            username: invite.inviterUsername,
+        }) || 'Someone';
+    }
+
+    eligibleInviteUsers() {
+        const {
+            channelList,
+            inviteSearch,
+            inviteSearchHasRun,
+            inviteSearchResults,
+        } = this.state;
+        const source = inviteSearchHasRun ? inviteSearchResults : (this.props.profiles || []);
+        const occupiedUserIDs = new Set();
+        channelList.forEach((room) => {
+            (room.participants || []).forEach((participant) => occupiedUserIDs.add(participant.id));
+        });
+
+        const query = inviteSearch.trim().toLowerCase();
+        const seen = new Set();
+        return source.filter((user) => {
+            if (!user || !user.id || seen.has(user.id)) {
+                return false;
+            }
+            seen.add(user.id);
+            if (user.id === this.props.userId || user.delete_at || user.is_bot || occupiedUserIDs.has(user.id)) {
+                return false;
+            }
+            if (!query) {
+                return true;
+            }
+            return userDisplayName(user).toLowerCase().includes(query) || (user.username || '').toLowerCase().includes(query);
+        }).sort((a, b) => userDisplayName(a).localeCompare(userDisplayName(b), 'en', {sensitivity: 'base'}));
+    }
+
+    handleToggleInvitePicker = (e) => {
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+        if (e && e.stopPropagation) {
+            e.stopPropagation();
+        }
+        if (!this.state.activeRoom) {
+            return;
+        }
+        this.inviteSearchRequestId += 1;
+        this.setState((state) => ({
+            showInvitePicker: !state.showInvitePicker,
+            inviteSearch: '',
+            inviteSearchResults: [],
+            inviteSearchHasRun: false,
+            inviteSearchPending: false,
+            inviteError: '',
+            inviteStatus: '',
+            openRoomMenuId: null,
+        }));
+    };
+
+    handleInviteSearchChange = (e) => {
+        const inviteSearch = e.target.value;
+        const term = inviteSearch.trim();
+        const requestId = ++this.inviteSearchRequestId;
+        this.setState({
+            inviteSearch,
+            inviteSearchResults: [],
+            inviteSearchHasRun: false,
+            inviteSearchPending: term.length >= 2,
+            inviteError: '',
+        });
+
+        if (term.length < 2) {
+            return;
+        }
+        searchVoiceInviteUsers(term).
+            then((users) => {
+                if (this.isUnmounted || requestId !== this.inviteSearchRequestId) {
+                    return;
+                }
+                this.setState({
+                    inviteSearchResults: users,
+                    inviteSearchHasRun: true,
+                    inviteSearchPending: false,
+                });
+            }).
+            catch((error) => {
+                if (this.isUnmounted || requestId !== this.inviteSearchRequestId) {
+                    return;
+                }
+                debug('voice invite user search failed', error);
+                this.setState({
+                    inviteSearchResults: [],
+                    inviteSearchHasRun: true,
+                    inviteSearchPending: false,
+                    inviteError: 'Could not search for users.',
+                });
+            });
+    };
+
+    handleSendVoiceInvite = (user) => (e) => {
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+        const {activeRoom} = this.state;
+        if (!activeRoom || !user || !user.id) {
+            return null;
+        }
+
+        this.setState({invitingUserId: user.id, inviteError: '', inviteStatus: ''});
+        return sendVoiceRoomInvite(activeRoom.roomId, user.id).
+            then(() => {
+                if (!this.isUnmounted) {
+                    const name = userDisplayName(user) || user.username || 'user';
+                    this.setState((state) => ({
+                        invitingUserId: null,
+                        invitedUserIds: {...state.invitedUserIds, [user.id]: true},
+                        inviteStatus: `Invitation sent to ${name}.`,
+                    }));
+                }
+            }).
+            catch((error) => {
+                if (this.isUnmounted) {
+                    return;
+                }
+                const unavailable = error && error.response && error.response.status === 409;
+                this.setState({
+                    invitingUserId: null,
+                    inviteError: unavailable ? 'That user has already joined a voice channel.' : 'Could not send the invitation.',
+                });
+                if (unavailable) {
+                    this.refreshRooms();
+                }
+            });
+    };
+
+    handleAcceptVoiceInvite = (e) => {
+        const {incomingVoiceInvite} = this.state;
+        if (!incomingVoiceInvite) {
+            return;
+        }
+        this.setState({incomingVoiceInvite: null});
+        this.handleJoinRoom(incomingVoiceInvite.roomId, incomingVoiceInvite.roomName)(e);
+    };
+
+    handleDismissVoiceInvite = (e) => {
+        if (e && e.preventDefault) {
+            e.preventDefault();
+        }
+        this.setState({incomingVoiceInvite: null});
+    };
 
     handlePresenceSound(change) {
         const {activeRoom} = this.state;
@@ -356,6 +545,7 @@ export class AudioCallPanel extends React.Component {
         e.stopPropagation();
         this.setState((state) => ({
             openRoomMenuId: state.openRoomMenuId === roomId ? null : roomId,
+            showInvitePicker: false,
         }));
     };
 
@@ -455,6 +645,15 @@ export class AudioCallPanel extends React.Component {
                 playBacks: {},
                 audioOn: false,
                 speakerOn: false,
+                showInvitePicker: false,
+                inviteSearch: '',
+                inviteSearchResults: [],
+                inviteSearchHasRun: false,
+                inviteSearchPending: false,
+                inviteError: '',
+                inviteStatus: '',
+                invitingUserId: null,
+                invitedUserIds: {},
             });
         }
     }
@@ -546,6 +745,15 @@ export class AudioCallPanel extends React.Component {
                 videoEnabled: false,
                 hoveredRoomId: null,
                 openRoomMenuId: null,
+                showInvitePicker: false,
+                inviteSearch: '',
+                inviteSearchResults: [],
+                inviteSearchHasRun: false,
+                inviteSearchPending: false,
+                inviteError: '',
+                inviteStatus: '',
+                invitingUserId: null,
+                invitedUserIds: {},
             }, () => {
                 if (transitionId === this.roomTransitionId) {
                     this.startPresence(roomId);
@@ -893,8 +1101,16 @@ export class AudioCallPanel extends React.Component {
             peerStreams,
             hoveredRoomId,
             openRoomMenuId,
+            showInvitePicker,
+            inviteSearch,
+            inviteSearchPending,
+            inviteError,
+            inviteStatus,
+            invitingUserId,
+            invitedUserIds,
         } = this.state;
         const style = getStyle();
+        const eligibleUsers = this.eligibleInviteUsers();
 
         return (
             <li
@@ -922,6 +1138,20 @@ export class AudioCallPanel extends React.Component {
                         {this.renderVoiceControls()}
                     </span>
                     <span style={style.inRoomHeaderActions}>
+                        <button
+                            type='button'
+                            style={{...style.roomSettingsBtn, ...style.inviteButton}}
+                            onClick={this.handleToggleInvitePicker}
+                            title='Invite a user to this voice channel'
+                            aria-label={`Invite users to voice channel ${room.name}`}
+                            aria-haspopup='dialog'
+                            aria-expanded={showInvitePicker}
+                        >
+                            <i
+                                className='icon fa fa-user-plus'
+                                aria-hidden='true'
+                            />
+                        </button>
                         {this.canDeleteRoom(room) && (
                             <span style={style.roomActions}>
                                 <button
@@ -973,6 +1203,67 @@ export class AudioCallPanel extends React.Component {
                         </button>
                     </span>
                 </div>
+                {showInvitePicker && (
+                    <div
+                        role='dialog'
+                        aria-label={`Invite a user to ${room.name}`}
+                        style={style.invitePicker}
+                    >
+                        <strong style={style.inviteTitle}>{`Invite to ${room.name}`}</strong>
+                        <input
+                            type='search'
+                            autoFocus={true}
+                            value={inviteSearch}
+                            onChange={this.handleInviteSearchChange}
+                            placeholder='Search by name or username...'
+                            aria-label='Search users to invite'
+                            style={style.inviteSearchInput}
+                        />
+                        {inviteSearchPending ? (
+                            <div style={style.inviteEmpty}>{'Searching...'}</div>
+                        ) : (
+                            <>
+                                {eligibleUsers.length === 0 ? (
+                                    <div style={style.inviteEmpty}>
+                                        {inviteSearch.trim().length < 2 ? 'Type at least two characters to search for more users.' : 'No available users found.'}
+                                    </div>
+                                ) : (
+                                    <ul style={style.inviteUserList}>
+                                        {eligibleUsers.map((user) => {
+                                            const alreadyInvited = Boolean(invitedUserIds[user.id]);
+                                            let actionLabel = 'Invite';
+                                            if (alreadyInvited) {
+                                                actionLabel = 'Sent';
+                                            } else if (invitingUserId === user.id) {
+                                                actionLabel = 'Sending...';
+                                            }
+                                            return (
+                                                <li key={user.id}>
+                                                    <button
+                                                        type='button'
+                                                        style={alreadyInvited || invitingUserId ? {...style.inviteUserButton, ...style.inviteUserButtonDisabled} : style.inviteUserButton}
+                                                        onClick={this.handleSendVoiceInvite(user)}
+                                                        disabled={alreadyInvited || Boolean(invitingUserId)}
+                                                    >
+                                                        <span style={style.inviteUserIdentity}>
+                                                            <strong>{userDisplayName(user) || user.username}</strong>
+                                                            <span style={style.inviteUsername}>{`@${user.username}`}</span>
+                                                        </span>
+                                                        <span style={style.inviteUserAction}>
+                                                            {actionLabel}
+                                                        </span>
+                                                    </button>
+                                                </li>
+                                            );
+                                        })}
+                                    </ul>
+                                )}
+                            </>
+                        )}
+                        {inviteError && <div style={style.inviteError}>{inviteError}</div>}
+                        {inviteStatus && <div style={style.inviteStatus}>{inviteStatus}</div>}
+                    </div>
+                )}
                 {connectionHint && <p style={{...style.hint, ...style.hintInList}}>{connectionHint}</p>}
                 {this.renderRoster([
                     ...(swarmInitialized ? [{key: 'self', name: selfName, audioOn: Boolean(audioOn && audioEnabled)}] : []),
@@ -1000,6 +1291,8 @@ export class AudioCallPanel extends React.Component {
             newChannelNameDraft,
             hoveredRoomId,
             openRoomMenuId,
+            showInvitePicker,
+            incomingVoiceInvite,
         } = this.state;
         const style = getStyle();
 
@@ -1039,6 +1332,34 @@ export class AudioCallPanel extends React.Component {
                         )}
                     </div>
 
+                    {incomingVoiceInvite && (
+                        <div
+                            role='alert'
+                            style={style.incomingInvite}
+                        >
+                            <div style={style.incomingInviteText}>
+                                <strong>{this.voiceInviteDisplayName(incomingVoiceInvite)}</strong>
+                                {` invited you to join ${incomingVoiceInvite.roomName}.`}
+                            </div>
+                            <div style={style.incomingInviteActions}>
+                                <button
+                                    type='button'
+                                    style={style.acceptInviteButton}
+                                    onClick={this.handleAcceptVoiceInvite}
+                                >
+                                    {'Join'}
+                                </button>
+                                <button
+                                    type='button'
+                                    style={style.dismissInviteButton}
+                                    onClick={this.handleDismissVoiceInvite}
+                                >
+                                    {'Dismiss'}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
                     {Array.isArray(channelList) && (
                         <>
                             {isSystemAdmin && showCreateInput && (
@@ -1074,7 +1395,7 @@ export class AudioCallPanel extends React.Component {
                             {directoryError && (
                                 <div style={style.roomHint}>{directoryError}</div>
                             )}
-                            <ul style={openRoomMenuId ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
+                            <ul style={openRoomMenuId || showInvitePicker ? {...style.roomList, ...style.roomListMenuOpen} : style.roomList}>
                                 {visibleRooms.length === 0 && !showCreateInput && (
                                     <li style={style.roomHint}>
                                         {isSystemAdmin ? 'No channels yet — create one and everyone on this server will see it.' : 'No voice channels yet. A system administrator can create one.'}
@@ -1206,6 +1527,42 @@ const getStyle = () => ({
         textTransform: 'uppercase',
         letterSpacing: '0.04em',
         color: 'rgba(255,255,255,0.65)',
+    },
+    incomingInvite: {
+        margin: '0 10px 8px',
+        padding: '9px 10px',
+        border: '1px solid rgba(91,156,248,0.45)',
+        borderRadius: 4,
+        background: 'rgba(91,156,248,0.14)',
+        color: '#fff',
+    },
+    incomingInviteText: {
+        fontSize: '0.86em',
+        lineHeight: 1.35,
+    },
+    incomingInviteActions: {
+        display: 'flex',
+        gap: 6,
+        marginTop: 8,
+    },
+    acceptInviteButton: {
+        padding: '5px 10px',
+        border: 'none',
+        borderRadius: 4,
+        background: '#166de0',
+        color: '#fff',
+        cursor: 'pointer',
+        fontWeight: 600,
+        fontFamily: 'inherit',
+    },
+    dismissInviteButton: {
+        padding: '5px 10px',
+        border: '1px solid rgba(255,255,255,0.2)',
+        borderRadius: 4,
+        background: 'transparent',
+        color: 'rgba(255,255,255,0.85)',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
     },
     linkBtn: {
         border: 'none',
@@ -1342,6 +1699,11 @@ const getStyle = () => ({
         opacity: 0,
         pointerEvents: 'none',
     },
+    inviteButton: {
+        flexShrink: 0,
+        background: 'rgba(91,156,248,0.18)',
+        color: '#b9d6ff',
+    },
     roomMenu: {
         position: 'absolute',
         top: 'calc(100% + 4px)',
@@ -1366,6 +1728,94 @@ const getStyle = () => ({
         fontWeight: 600,
         fontFamily: 'inherit',
         textAlign: 'left',
+    },
+    invitePicker: {
+        position: 'absolute',
+        top: 38,
+        right: 0,
+        zIndex: 4,
+        width: 280,
+        maxWidth: 'calc(100vw - 32px)',
+        padding: 10,
+        border: '1px solid rgba(255,255,255,0.14)',
+        borderRadius: 4,
+        background: '#263442',
+        boxShadow: '0 6px 18px rgba(0,0,0,0.4)',
+        color: '#fff',
+    },
+    inviteTitle: {
+        display: 'block',
+        marginBottom: 8,
+        fontSize: '0.9em',
+    },
+    inviteSearchInput: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '7px 8px',
+        border: '1px solid rgba(255,255,255,0.2)',
+        borderRadius: 4,
+        background: 'rgba(0,0,0,0.22)',
+        color: '#fff',
+        fontFamily: 'inherit',
+        fontSize: '0.88em',
+    },
+    inviteUserList: {
+        listStyle: 'none',
+        margin: '8px 0 0',
+        padding: 0,
+        maxHeight: 190,
+        overflowY: 'auto',
+    },
+    inviteUserButton: {
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 8,
+        width: '100%',
+        padding: '7px 8px',
+        border: 'none',
+        borderRadius: 3,
+        background: 'transparent',
+        color: '#fff',
+        cursor: 'pointer',
+        textAlign: 'left',
+        fontFamily: 'inherit',
+    },
+    inviteUserButtonDisabled: {
+        cursor: 'default',
+        opacity: 0.6,
+    },
+    inviteUserIdentity: {
+        display: 'flex',
+        flexDirection: 'column',
+        minWidth: 0,
+    },
+    inviteUsername: {
+        marginTop: 1,
+        color: 'rgba(255,255,255,0.55)',
+        fontSize: '0.8em',
+    },
+    inviteUserAction: {
+        flexShrink: 0,
+        color: '#9dc5ff',
+        fontSize: '0.8em',
+        fontWeight: 600,
+    },
+    inviteEmpty: {
+        padding: '10px 2px 2px',
+        color: 'rgba(255,255,255,0.55)',
+        fontSize: '0.8em',
+        lineHeight: 1.35,
+    },
+    inviteError: {
+        marginTop: 8,
+        color: '#ffb4b4',
+        fontSize: '0.8em',
+    },
+    inviteStatus: {
+        marginTop: 8,
+        color: '#9ee6b2',
+        fontSize: '0.8em',
     },
     roomHint: {
         color: 'rgba(255,255,255,0.5)',

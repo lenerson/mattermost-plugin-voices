@@ -10,8 +10,14 @@ jest.mock('../../../utils/voiceRoomSounds', () => ({
     playVoiceRoomJoinSound: jest.fn(),
     playVoiceRoomLeaveSound: jest.fn(),
 }));
+jest.mock('../../../utils/voiceInvitesApi', () => ({
+    searchVoiceInviteUsers: jest.fn(),
+    sendVoiceRoomInvite: jest.fn(),
+}));
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
+import {emitVoiceInvite} from '../../../utils/voiceInviteEvents';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
@@ -63,6 +69,13 @@ function hasText(text) {
 
 function hasRoleAndAriaLabel(role, label) {
     return (element) => element.props && element.props.role === role && element.props['aria-label'] === label;
+}
+
+function applyStateSynchronously(panel) {
+    panel.setState = (update) => {
+        const nextState = typeof update === 'function' ? update(panel.state) : update;
+        panel.state = {...panel.state, ...nextState};
+    };
 }
 
 describe('AudioCallPanel room directory', () => {
@@ -195,6 +208,7 @@ describe('AudioCallPanel room directory', () => {
         const activeHeader = findElements(rendered, hasRoleAndAriaLabel('group', 'Voice channel Standup controls'))[0];
         expect(findElements(activeHeader, hasAriaLabel('Enable microphone'))).toHaveLength(1);
         expect(findElements(activeHeader, hasAriaLabel('Disable voice channel audio'))).toHaveLength(1);
+        expect(findElements(rendered, hasAriaLabel('Invite users to voice channel Standup'))).toHaveLength(1);
         expect(findElements(rendered, hasAriaLabel('Join voice channel Planning'))).toHaveLength(1);
         expect(findElements(rendered, hasAriaLabel('Join voice channel Standup'))).toHaveLength(0);
         expect(findElements(rendered, hasAriaLabel('Voice channel settings for Standup'))).toHaveLength(1);
@@ -293,6 +307,87 @@ describe('AudioCallPanel room directory', () => {
 
         panel.handleExclusivePresenceChange({userId: 'user-1', previousRoomId: 'room-1', roomId: 'room-2'});
         expect(panel.disconnectLocalRoom).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('AudioCallPanel voice invitations', () => {
+    beforeEach(() => {
+        sendVoiceRoomInvite.mockReset();
+    });
+
+    test('lists only users who are not already in a voice room', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            profiles: [
+                {id: 'user-1', username: 'self'},
+                {id: 'user-2', username: 'available'},
+                {id: 'user-3', username: 'busy'},
+                {id: 'user-4', username: 'bot', is_bot: true},
+                {id: 'user-5', username: 'deleted', delete_at: 1},
+            ],
+            isSystemAdmin: false,
+        });
+        panel.state.channelList = [
+            {roomId: 'room-1', participants: [{id: 'user-1'}]},
+            {roomId: 'room-2', participants: [{id: 'user-3'}]},
+        ];
+
+        const eligibleUsers = panel.eligibleInviteUsers();
+        expect(eligibleUsers).toHaveLength(1);
+        expect(eligibleUsers[0].id).toBe('user-2');
+    });
+
+    test('sends an invitation for the active room and marks it as sent', async () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        applyStateSynchronously(panel);
+        sendVoiceRoomInvite.mockResolvedValue();
+
+        await panel.handleSendVoiceInvite({id: 'user-2', username: 'guest'})({preventDefault: jest.fn()});
+
+        expect(sendVoiceRoomInvite).toHaveBeenCalledWith('room-1', 'user-2');
+        expect(panel.state.invitedUserIds['user-2']).toBe(true);
+        expect(panel.state.inviteStatus).toBe('Invitation sent to guest.');
+    });
+
+    test('shows a targeted invitation and joins its room when accepted', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-2',
+            profilesById: {},
+            profiles: [],
+            isSystemAdmin: false,
+        });
+        panel.setState = (update) => {
+            panel.state = {...panel.state, ...update};
+        };
+        const joinHandler = jest.fn();
+        panel.handleJoinRoom = jest.fn(() => joinHandler);
+        panel.startVoiceInviteEvents();
+
+        emitVoiceInvite({
+            roomId: 'room-1',
+            roomName: 'Standup',
+            inviterId: 'user-1',
+            inviterUsername: 'host',
+        });
+
+        expect(panel.state.incomingVoiceInvite).toEqual(expect.objectContaining({roomId: 'room-1'}));
+        const rendered = panel.render();
+        expect(findElements(rendered, (element) => element.props && element.props.role === 'alert')).toHaveLength(1);
+
+        const event = {preventDefault: jest.fn()};
+        panel.handleAcceptVoiceInvite(event);
+        expect(panel.handleJoinRoom).toHaveBeenCalledWith('room-1', 'Standup');
+        expect(joinHandler).toHaveBeenCalledWith(event);
+        expect(panel.state.incomingVoiceInvite).toBeNull();
+
+        panel.stopVoiceInviteEvents();
     });
 });
 

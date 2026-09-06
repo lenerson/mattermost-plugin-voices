@@ -16,6 +16,7 @@ import {getDirectMessagePeerUserId} from './utils/dmPeer';
 import {withErrorBoundary} from './components/with_error_boundary';
 import debug from './utils/debug';
 import {registerVoicePresenceEvents} from './utils/voicePresenceEvents';
+import {registerVoiceInviteEvents} from './utils/voiceInviteEvents';
 
 /**
  * Each registration is isolated: a registry method this server version does not
@@ -156,6 +157,7 @@ export default class Plugin {
         ));
 
         safely('registerWebSocketEventHandler(voice_presence)', () => registerVoicePresenceEvents(registry));
+        safely('registerWebSocketEventHandler(voice_invite)', () => registerVoiceInviteEvents(registry));
 
         safely('loadConfig', () => whenStoreReady(store, () => {
             loadConfig()(store.dispatch, store.getState);
