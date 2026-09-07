@@ -403,13 +403,17 @@ describe('AudioCallPanel voice invitations', () => {
         applyStateSynchronously(panel);
 
         const rendered = panel.render();
+        const anchor = findElements(rendered, hasClassName('voice-channel-invite-anchor'))[0];
         const picker = findElements(rendered, hasRoleAndAriaLabel('dialog', 'Invite a user to Standup'))[0];
         const closeButton = findElements(rendered, hasAriaLabel('Close invitation picker'))[0];
         const event = {preventDefault: jest.fn(), stopPropagation: jest.fn()};
         closeButton.props.onClick(event);
 
+        expect(findElements(anchor, hasAriaLabel('Invite users to voice channel Standup'))).toHaveLength(1);
+        expect(findElements(anchor, hasRoleAndAriaLabel('dialog', 'Invite a user to Standup'))).toHaveLength(1);
+        expect(picker.props.style.top).toBe(0);
         expect(picker.props.style.right).toBe('auto');
-        expect(picker.props.style.left).toBe('calc(100% + 10px)');
+        expect(picker.props.style.left).toBe('calc(100% + 4px)');
         expect(picker.props.style.width).toBe(280);
         expect(picker.props.style.maxWidth).toBe('calc(100vw - 32px)');
         expect(picker.props.style.boxSizing).toBe('border-box');

@@ -1239,6 +1239,100 @@ export class AudioCallPanel extends React.Component {
         );
     }
 
+    renderInvitePicker(room) {
+        const {
+            showInvitePicker,
+            inviteSearch,
+            inviteSearchPending,
+            inviteError,
+            inviteStatus,
+            invitingUserId,
+        } = this.state;
+        if (!showInvitePicker) {
+            return null;
+        }
+        const style = getStyle();
+        const eligibleUsers = this.eligibleInviteUsers();
+
+        return (
+            <div
+                ref={this.invitePickerRef}
+                role='dialog'
+                aria-label={`Invite a user to ${room.name}`}
+                style={style.invitePicker}
+            >
+                <div style={style.inviteHeader}>
+                    <strong style={style.inviteTitle}>{`Invite to ${room.name}`}</strong>
+                    <button
+                        type='button'
+                        style={style.inviteCloseButton}
+                        onClick={this.handleCloseInvitePicker}
+                        title='Close invitation picker'
+                        aria-label='Close invitation picker'
+                    >
+                        <i
+                            className='icon fa fa-times'
+                            aria-hidden='true'
+                        />
+                    </button>
+                </div>
+                <input
+                    type='search'
+                    autoFocus={true}
+                    value={inviteSearch}
+                    onChange={this.handleInviteSearchChange}
+                    placeholder='Search by name or username...'
+                    aria-label='Search users to invite'
+                    style={style.inviteSearchInput}
+                />
+                {inviteSearchPending ? (
+                    <div style={style.inviteEmpty}>{'Searching...'}</div>
+                ) : (
+                    <>
+                        {eligibleUsers.length === 0 ? (
+                            <div style={style.inviteEmpty}>
+                                {inviteSearch.trim().length < 2 ? 'Type at least two characters to search for more users.' : 'No available users found.'}
+                            </div>
+                        ) : (
+                            <ul style={style.inviteUserList}>
+                                {eligibleUsers.map((user) => {
+                                    const displayName = userDisplayName(user) || user.username;
+                                    const isSending = invitingUserId === user.id;
+                                    return (
+                                        <li
+                                            key={user.id}
+                                            style={style.inviteUserRow}
+                                        >
+                                            <span style={style.inviteUserIdentity}>
+                                                <strong>{displayName}</strong>
+                                                <span style={style.inviteUsername}>{`@${user.username}`}</span>
+                                            </span>
+                                            <button
+                                                type='button'
+                                                style={invitingUserId ? {...style.inviteUserIconButton, ...style.inviteUserButtonDisabled} : style.inviteUserIconButton}
+                                                onClick={this.handleSendVoiceInvite(user)}
+                                                disabled={Boolean(invitingUserId)}
+                                                title={`Invite ${displayName}`}
+                                                aria-label={`Invite ${displayName} to ${room.name}`}
+                                            >
+                                                <i
+                                                    className={isSending ? 'icon fa fa-spinner fa-spin' : 'icon fa fa-paper-plane'}
+                                                    aria-hidden='true'
+                                                />
+                                            </button>
+                                        </li>
+                                    );
+                                })}
+                            </ul>
+                        )}
+                    </>
+                )}
+                {inviteError && <div style={style.inviteError}>{inviteError}</div>}
+                {inviteStatus && <div style={style.inviteStatus}>{inviteStatus}</div>}
+            </div>
+        );
+    }
+
     renderActiveRoom(room, connectionHint, selfName) {
         const {
             audioOn,
@@ -1248,14 +1342,8 @@ export class AudioCallPanel extends React.Component {
             hoveredRoomId,
             openRoomMenuId,
             showInvitePicker,
-            inviteSearch,
-            inviteSearchPending,
-            inviteError,
-            inviteStatus,
-            invitingUserId,
         } = this.state;
         const style = getStyle();
-        const eligibleUsers = this.eligibleInviteUsers();
 
         return (
             <li
@@ -1283,21 +1371,27 @@ export class AudioCallPanel extends React.Component {
                         {this.renderVoiceControls()}
                     </span>
                     <span style={style.inRoomHeaderActions}>
-                        <button
-                            ref={this.inviteButtonRef}
-                            type='button'
-                            style={{...style.voiceControlButton, ...style.inviteButton}}
-                            onClick={this.handleToggleInvitePicker}
-                            title='Invite a user to this voice channel'
-                            aria-label={`Invite users to voice channel ${room.name}`}
-                            aria-haspopup='dialog'
-                            aria-expanded={showInvitePicker}
+                        <span
+                            className='voice-channel-invite-anchor'
+                            style={style.inviteAnchor}
                         >
-                            <i
-                                className='icon fa fa-user-plus'
-                                aria-hidden='true'
-                            />
-                        </button>
+                            <button
+                                ref={this.inviteButtonRef}
+                                type='button'
+                                style={{...style.voiceControlButton, ...style.inviteButton}}
+                                onClick={this.handleToggleInvitePicker}
+                                title='Invite a user to this voice channel'
+                                aria-label={`Invite users to voice channel ${room.name}`}
+                                aria-haspopup='dialog'
+                                aria-expanded={showInvitePicker}
+                            >
+                                <i
+                                    className='icon fa fa-user-plus'
+                                    aria-hidden='true'
+                                />
+                            </button>
+                            {this.renderInvitePicker(room)}
+                        </span>
                         {this.canDeleteRoom(room) && (
                             <span style={style.roomActions}>
                                 <button
@@ -1349,83 +1443,6 @@ export class AudioCallPanel extends React.Component {
                         </button>
                     </span>
                 </div>
-                {showInvitePicker && (
-                    <div
-                        ref={this.invitePickerRef}
-                        role='dialog'
-                        aria-label={`Invite a user to ${room.name}`}
-                        style={style.invitePicker}
-                    >
-                        <div style={style.inviteHeader}>
-                            <strong style={style.inviteTitle}>{`Invite to ${room.name}`}</strong>
-                            <button
-                                type='button'
-                                style={style.inviteCloseButton}
-                                onClick={this.handleCloseInvitePicker}
-                                title='Close invitation picker'
-                                aria-label='Close invitation picker'
-                            >
-                                <i
-                                    className='icon fa fa-times'
-                                    aria-hidden='true'
-                                />
-                            </button>
-                        </div>
-                        <input
-                            type='search'
-                            autoFocus={true}
-                            value={inviteSearch}
-                            onChange={this.handleInviteSearchChange}
-                            placeholder='Search by name or username...'
-                            aria-label='Search users to invite'
-                            style={style.inviteSearchInput}
-                        />
-                        {inviteSearchPending ? (
-                            <div style={style.inviteEmpty}>{'Searching...'}</div>
-                        ) : (
-                            <>
-                                {eligibleUsers.length === 0 ? (
-                                    <div style={style.inviteEmpty}>
-                                        {inviteSearch.trim().length < 2 ? 'Type at least two characters to search for more users.' : 'No available users found.'}
-                                    </div>
-                                ) : (
-                                    <ul style={style.inviteUserList}>
-                                        {eligibleUsers.map((user) => {
-                                            const displayName = userDisplayName(user) || user.username;
-                                            const isSending = invitingUserId === user.id;
-                                            return (
-                                                <li
-                                                    key={user.id}
-                                                    style={style.inviteUserRow}
-                                                >
-                                                    <span style={style.inviteUserIdentity}>
-                                                        <strong>{displayName}</strong>
-                                                        <span style={style.inviteUsername}>{`@${user.username}`}</span>
-                                                    </span>
-                                                    <button
-                                                        type='button'
-                                                        style={invitingUserId ? {...style.inviteUserIconButton, ...style.inviteUserButtonDisabled} : style.inviteUserIconButton}
-                                                        onClick={this.handleSendVoiceInvite(user)}
-                                                        disabled={Boolean(invitingUserId)}
-                                                        title={`Invite ${displayName}`}
-                                                        aria-label={`Invite ${displayName} to ${room.name}`}
-                                                    >
-                                                        <i
-                                                            className={isSending ? 'icon fa fa-spinner fa-spin' : 'icon fa fa-paper-plane'}
-                                                            aria-hidden='true'
-                                                        />
-                                                    </button>
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
-                                )}
-                            </>
-                        )}
-                        {inviteError && <div style={style.inviteError}>{inviteError}</div>}
-                        {inviteStatus && <div style={style.inviteStatus}>{inviteStatus}</div>}
-                    </div>
-                )}
                 {connectionHint && <p style={{...style.hint, ...style.hintInList}}>{connectionHint}</p>}
                 {this.renderRoster([
                     ...(swarmInitialized ? [{key: 'self', name: selfName, audioOn: Boolean(audioOn && audioEnabled)}] : []),
@@ -1866,6 +1883,11 @@ const getStyle = () => ({
         opacity: 0,
         pointerEvents: 'none',
     },
+    inviteAnchor: {
+        position: 'relative',
+        display: 'inline-flex',
+        flexShrink: 0,
+    },
     inviteButton: {
         flexShrink: 0,
         background: 'transparent',
@@ -1898,9 +1920,9 @@ const getStyle = () => ({
     },
     invitePicker: {
         position: 'absolute',
-        top: 38,
+        top: 0,
         right: 'auto',
-        left: 'calc(100% + 10px)',
+        left: 'calc(100% + 4px)',
         zIndex: 1000,
         width: 280,
         maxWidth: 'calc(100vw - 32px)',
