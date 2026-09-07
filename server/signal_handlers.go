@@ -4,9 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 )
 
 const maxSignalTopicLen = 1024
+
+/*
+ * How often to send an SSE comment frame on an otherwise silent stream.
+ *
+ * Most topics are idle by definition — call-<userId> carries nothing until
+ * somebody actually rings — and a reverse proxy closes an idle connection
+ * (nginx defaults to 60s), which kills the subscription without a sound.
+ * A var rather than a const so tests need not wait for it.
+ */
+var signalStreamHeartbeat = 25 * time.Second
 
 func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -63,14 +74,27 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 
+	// nginx buffers proxied responses by default, holding frames back until
+	// the buffer fills, which is fatal for signalling that must arrive now.
+	w.Header().Set("X-Accel-Buffering", "no")
+
 	ch, unsub := p.getSignal().subscribe(topic)
 	defer unsub()
+
+	heartbeat := time.NewTicker(signalStreamHeartbeat)
+	defer heartbeat.Stop()
 
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-heartbeat.C:
+			// A comment frame: EventSource ignores it, proxies see traffic.
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			fl.Flush()
 		case msg, ok := <-ch:
 			if !ok {
 				return

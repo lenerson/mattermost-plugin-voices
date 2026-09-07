@@ -2,10 +2,10 @@
     "id": "mattermost-webrtc-video",
     "name": "WebRTC Video",
     "description": "Mattermost plugin for webRTC peer to peer video call.",
-    "homepage_url": "https://github.com/niklabh/mattermost-plugin-webrtc-video",
-    "support_url": "https://github.com/niklabh/mattermost-plugin-webrtc-video/issues",
+    "homepage_url": "https://github.com/lenerson/mattermost-plugin-voices",
+    "support_url": "https://github.com/lenerson/mattermost-plugin-voices/issues",
     "icon_path": "assets/logo.png",
-    "version": "2.0.1",
+    "version": "2.4.14",
     "min_server_version": "10.0.0",
     "server": {
         "executables": {
@@ -47,6 +47,6 @@
                 "help_text": "TURN server credential (password)."
             }
         ],
-        "footer": "* To report an issue, make a suggestion or a contribution, [check the repository](https://github.com/niklabh/mattermost-plugin-webrtc-video)."
+        "footer": "* To report an issue, make a suggestion or a contribution, [check the repository](https://github.com/lenerson/mattermost-plugin-voices)."
     }
 }

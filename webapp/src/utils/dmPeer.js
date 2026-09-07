@@ -9,14 +9,22 @@ export function getDirectMessagePeerUserId(state, channel) {
     if (!channel) {
         return null;
     }
+
+    const me = getCurrentUser(state);
+    const myId = me && me.id;
+
+    /*
+     * Mattermost lets you open a DM with yourself. That channel has no peer to
+     * call, and it is named `id__id`, so both halves of the split match and the
+     * plugin would happily ring itself — a call that can never connect.
+     */
     if (channel.teammate_id) {
-        return channel.teammate_id;
+        return channel.teammate_id === myId ? null : channel.teammate_id;
     }
     if (channel.type !== General.DM_CHANNEL) {
         return null;
     }
-    const me = getCurrentUser(state);
-    if (!me || !channel.name) {
+    if (!myId || !channel.name) {
         return null;
     }
     const ids = channel.name.split('__');
@@ -24,10 +32,13 @@ export function getDirectMessagePeerUserId(state, channel) {
         return null;
     }
     const [a, b] = ids;
-    if (a === me.id) {
+    if (a === b) {
+        return null;
+    }
+    if (a === myId) {
         return b;
     }
-    if (b === me.id) {
+    if (b === myId) {
         return a;
     }
     return null;

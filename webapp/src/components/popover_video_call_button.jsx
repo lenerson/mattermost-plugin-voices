@@ -18,14 +18,14 @@ class PopoverVideoCallButton extends React.PureComponent {
         currentUserId: PropTypes.string,
     };
 
-    handleClick = () => {
-        const {user_id: snake, userId: camel, hide, makeVideoCall: startCall} = this.props;
+    startCall = (audioOnly) => () => {
+        const {user_id: snake, userId: camel, hide, makeVideoCall: placeCall} = this.props;
         const targetId = camel || snake;
         if (hide) {
             hide();
         }
         if (targetId) {
-            startCall(targetId);
+            placeCall(targetId, {audioOnly});
         }
     };
 
@@ -40,25 +40,42 @@ class PopoverVideoCallButton extends React.PureComponent {
         const bg = t.buttonBg || '#166de0';
         const fg = t.buttonColor || '#fff';
 
+        const buttonStyle = {
+            flex: 1,
+            backgroundColor: bg,
+            borderColor: bg,
+            color: fg,
+        };
+
         return (
-            <button
-                type='button'
-                className='btn btn-primary'
-                style={{
-                    marginTop: 12,
-                    width: '100%',
-                    backgroundColor: bg,
-                    borderColor: bg,
-                    color: fg,
-                }}
-                onClick={this.handleClick}
-            >
-                <i
-                    className='fa fa-video-camera'
-                    style={{marginRight: 8}}
-                />
-                {'Video call'}
-            </button>
+            <div style={{display: 'flex', gap: 8, marginTop: 12}}>
+                <button
+                    type='button'
+                    className='btn btn-primary'
+                    style={buttonStyle}
+                    title='Start a voice call'
+                    onClick={this.startCall(true)}
+                >
+                    <i
+                        className='fa fa-phone'
+                        style={{marginRight: 8}}
+                    />
+                    {'Voice'}
+                </button>
+                <button
+                    type='button'
+                    className='btn btn-primary'
+                    style={buttonStyle}
+                    title='Start a video call'
+                    onClick={this.startCall(false)}
+                >
+                    <i
+                        className='fa fa-video-camera'
+                        style={{marginRight: 8}}
+                    />
+                    {'Video'}
+                </button>
+            </div>
         );
     }
 }

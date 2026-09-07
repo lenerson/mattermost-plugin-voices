@@ -1,77 +1,120 @@
 /**
- * Lightweight repeating ring tone for incoming calls (Web Audio API).
+ * Call tones (Web Audio API): a double beep for an incoming call, and a
+ * ringback for the caller while the far side is being rung.
  */
-let audioCtx;
-let ringNodes;
-let ringTimer;
 
-function stopOscillators() {
-    if (ringTimer) {
-        clearInterval(ringTimer);
-        ringTimer = null;
+/**
+ * Each ringer owns its AudioContext, so stopping one cannot silence the other,
+ * and resumes it before playing — a context built before the page has seen a
+ * user gesture starts suspended and would otherwise stay silent for good.
+ *
+ * Pulses are scheduled on the audio clock rather than with setTimeout, so the
+ * cadence does not drift; closing the context is what cuts any pulse still in
+ * flight when the call is answered.
+ */
+function createRinger({frequency, pulseMs, pulseCount, pulseGapMs, cycleMs, peak}) {
+    let ctx = null;
+    let cycleTimer = null;
+
+    function schedulePulse(at) {
+        const oscillator = ctx.createOscillator();
+        const gain = ctx.createGain();
+        const seconds = pulseMs / 1000;
+
+        oscillator.type = 'sine';
+        oscillator.frequency.value = frequency;
+        gain.gain.value = 0.0001;
+        oscillator.connect(gain);
+        gain.connect(ctx.destination);
+
+        oscillator.start(at);
+        gain.gain.exponentialRampToValueAtTime(peak, at + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, at + seconds);
+        oscillator.stop(at + seconds + 0.01);
     }
-    if (ringNodes && ringNodes.length) {
-        ringNodes.forEach((n) => {
-            try {
-                n.stop();
-                n.disconnect();
-            } catch (e) {
-                /* ignore */
-            }
-        });
-        ringNodes = null;
-    }
-}
 
-function beepOnce(ctx) {
-    const o = ctx.createOscillator();
-    const g = ctx.createGain();
-    o.type = 'sine';
-    o.frequency.value = 800;
-    g.gain.value = 0.0001;
-    o.connect(g);
-    g.connect(ctx.destination);
-    o.start();
-    const peak = 0.08;
-    const start = ctx.currentTime;
-    g.gain.exponentialRampToValueAtTime(peak, start + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, start + 0.35);
-    o.stop(start + 0.36);
-    return o;
-}
-
-export function startIncomingRing() {
-    stopIncomingRing();
-    try {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        if (!AC) {
+    function playCycle() {
+        if (!ctx) {
             return;
         }
-        audioCtx = new AC();
-        const playPair = () => {
-            if (!audioCtx) {
+        const now = ctx.currentTime;
+        const step = (pulseMs + pulseGapMs) / 1000;
+        for (let i = 0; i < pulseCount; i++) {
+            schedulePulse(now + (i * step));
+        }
+    }
+
+    function stop() {
+        if (cycleTimer) {
+            clearInterval(cycleTimer);
+            cycleTimer = null;
+        }
+        try {
+            if (ctx && ctx.state !== 'closed') {
+                ctx.close();
+            }
+        } catch (e) {
+            /* ignore */
+        }
+        ctx = null;
+    }
+
+    function start() {
+        stop();
+        try {
+            const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+            if (!AudioContextCtor) {
                 return;
             }
-            ringNodes = [beepOnce(audioCtx), beepOnce(audioCtx)];
-            setTimeout(() => {
-                stopOscillators();
-            }, 900);
-        };
-        playPair();
-        ringTimer = setInterval(playPair, 1600);
-    } catch (e) {
-        /* user gesture or API blocked */
+            ctx = new AudioContextCtor();
+            if (ctx.state === 'suspended' && ctx.resume) {
+                ctx.resume().catch(() => {
+                    /* no user gesture on this page yet */
+                });
+            }
+            playCycle();
+            cycleTimer = setInterval(playCycle, cycleMs);
+        } catch (e) {
+            /* Web Audio blocked */
+        }
     }
+
+    return {start, stop};
+}
+
+// Incoming: an urgent double beep, close together, repeating briskly.
+const incomingRinger = createRinger({
+    frequency: 800,
+    pulseMs: 350,
+    pulseCount: 2,
+    pulseGapMs: 150,
+    cycleMs: 1600,
+    peak: 0.08,
+});
+
+// Outgoing: the familiar ringback — one long, low tone with a long gap, quieter
+// than the incoming ring because it plays into the caller's own ear.
+const outgoingRinger = createRinger({
+    frequency: 425,
+    pulseMs: 1000,
+    pulseCount: 1,
+    pulseGapMs: 0,
+    cycleMs: 4000,
+    peak: 0.04,
+});
+
+export function startIncomingRing() {
+    incomingRinger.start();
 }
 
 export function stopIncomingRing() {
-    stopOscillators();
-    try {
-        if (audioCtx && audioCtx.state !== 'closed') {
-            audioCtx.close();
-        }
-    } catch (e) {
-        /* ignore */
-    }
-    audioCtx = null;
+    incomingRinger.stop();
+}
+
+export function startOutgoingRingback() {
+    outgoingRinger.start();
+}
+
+export function stopOutgoingRingback() {
+    outgoingRinger.stop();
 }

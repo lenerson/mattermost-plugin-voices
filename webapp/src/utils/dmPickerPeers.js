@@ -1,5 +1,5 @@
 import General from 'mattermost-redux/constants/general';
-import {getChannel, getDirectChannels} from 'mattermost-redux/selectors/entities/channels';
+import {getAllDirectChannels, getChannel} from 'mattermost-redux/selectors/entities/channels';
 import {getUser} from 'mattermost-redux/selectors/entities/users';
 
 import {getDirectMessagePeerUserId} from './dmPeer';
@@ -16,7 +16,7 @@ export function userDisplayName(user) {
  * One row per 1:1 DM peer (for video call picker).
  */
 export function getDirectMessagePeersForPicker(state) {
-    const channels = getDirectChannels(state).filter((ch) => ch.type === General.DM_CHANNEL);
+    const channels = getAllDirectChannels(state).filter((ch) => ch && ch.type === General.DM_CHANNEL);
     const rows = [];
     const seen = new Set();
 

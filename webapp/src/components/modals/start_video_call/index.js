@@ -13,8 +13,11 @@ const getPeerName = (peer) => {
 };
 
 const mapStateToProps = (state) => {
-    const currentUser = getCurrentUser(state);
-    const peerId = state[`plugins-${pluginId}`].callPeerId;
+    // Never assume the current user or the plugin slice are hydrated: throwing
+    // here would take the whole Mattermost webapp down with the plugin.
+    const currentUser = getCurrentUser(state) || {};
+    const slice = state[`plugins-${pluginId}`] || {};
+    const peerId = slice.callPeerId || '';
     let peer = {};
 
     if (peerId) {
@@ -26,23 +29,24 @@ const mapStateToProps = (state) => {
     }
 
     return {
-        userId: currentUser.id,
+        userId: currentUser.id || '',
         peerId,
         peerName: getPeerName(peer),
-        visible: state[`plugins-${pluginId}`].modalVisible,
-        outgoing: state[`plugins-${pluginId}`].callOutgoing,
-        incoming: state[`plugins-${pluginId}`].callIncoming,
-        accepted: state[`plugins-${pluginId}`].callAccepted,
-        peerAccepted: state[`plugins-${pluginId}`].peerAccepted,
-        outgoingCallDeclined: state[`plugins-${pluginId}`].outgoingCallDeclined,
-        peerStream: state[`plugins-${pluginId}`].callPeerStream,
-        callPeerAudioOn: state[`plugins-${pluginId}`].callPeerAudioOn,
-        callPeerVideoOn: state[`plugins-${pluginId}`].callPeerVideoOn,
-        connectedPeer: state[`plugins-${pluginId}`].connectedPeer,
-        selfStream: state[`plugins-${pluginId}`].selfStream,
-        audioOn: state[`plugins-${pluginId}`].audioOn,
-        videoOn: state[`plugins-${pluginId}`].videoOn,
-
+        visible: Boolean(slice.modalVisible),
+        outgoing: Boolean(slice.callOutgoing),
+        incoming: Boolean(slice.callIncoming),
+        accepted: Boolean(slice.callAccepted),
+        peerAccepted: Boolean(slice.peerAccepted),
+        outgoingCallDeclined: Boolean(slice.outgoingCallDeclined),
+        peerStream: slice.callPeerStream,
+        callPeerAudioOn: Boolean(slice.callPeerAudioOn),
+        callPeerVideoOn: Boolean(slice.callPeerVideoOn),
+        connectedPeer: slice.connectedPeer,
+        selfStream: slice.selfStream,
+        mediaError: slice.mediaError || '',
+        callAudioOnly: Boolean(slice.callAudioOnly),
+        audioOn: Boolean(slice.audioOn),
+        videoOn: Boolean(slice.videoOn),
     };
 };
 

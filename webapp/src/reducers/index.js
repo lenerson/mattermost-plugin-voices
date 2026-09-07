@@ -250,6 +250,25 @@ const connectedPeer = (state = null, action) => {
     }
 };
 
+/**
+ * Why the local camera or microphone could not be opened, so a call that cannot
+ * capture media says so instead of sitting on "Connecting…" for ever.
+ */
+const mediaError = (state = '', action) => {
+    switch (action.type) {
+    case ActionTypes.MEDIA_ERROR:
+        return action.data;
+    case ActionTypes.MAKE_VIDEO_CALL:
+    case ActionTypes.ACCEPT_CALL:
+    case ActionTypes.RECEIVE_VIDEO_CALL:
+    case ActionTypes.REJECT_CALL:
+    case ActionTypes.END_CALL:
+        return '';
+    default:
+        return state;
+    }
+};
+
 const audioOn = (state = true, action) => {
     switch (action.type) {
     case ActionTypes.AUDIO_TOGGLE:
@@ -261,8 +280,30 @@ const audioOn = (state = true, action) => {
 
 const videoOn = (state = true, action) => {
     switch (action.type) {
+    // A call placed with the phone button starts with the camera off.
+    case ActionTypes.MAKE_VIDEO_CALL:
+    case ActionTypes.RECEIVE_VIDEO_CALL:
+        return !action.data.audioOnly;
     case ActionTypes.VIDEO_TOGGLE:
         return action.data;
+    default:
+        return state;
+    }
+};
+
+/**
+ * Whether this call was started as an audio call. Both ends need it: the caller
+ * to know not to open the camera, the callee so answering does not turn theirs
+ * on either.
+ */
+const callAudioOnly = (state = false, action) => {
+    switch (action.type) {
+    case ActionTypes.MAKE_VIDEO_CALL:
+    case ActionTypes.RECEIVE_VIDEO_CALL:
+        return Boolean(action.data.audioOnly);
+    case ActionTypes.REJECT_CALL:
+    case ActionTypes.END_CALL:
+        return false;
     default:
         return state;
     }
@@ -290,6 +331,8 @@ export default combineReducers({
     callPeerAudioOn,
     selfStream,
     connectedPeer,
+    mediaError,
+    callAudioOnly,
     audioOn,
     videoOn,
 });
