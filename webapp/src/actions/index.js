@@ -14,7 +14,7 @@ import ActionTypes from '../action_types';
 
 import debug from '../utils/debug';
 import {buildIceServers} from '../utils/iceServers';
-import pluginSignalHub, {authorizedSignalInbox, createAuthorizedSignalHub, sendAuthorizedSignalInvite} from '../utils/pluginSignalHub';
+import pluginSignalHub, {authorizedSignalHub, authorizedSignalInbox, createAuthorizedSignalHub, sendAuthorizedSignalInvite} from '../utils/pluginSignalHub';
 import {getDirectChannelIdForPeer, ensureDirectChannelId} from '../utils/dmChannel';
 import {createVideoInvitePost, sendCallDeclinedEphemeral, newCallId} from '../utils/callInvitePosts';
 import {startIncomingRing, startOutgoingRingback, stopIncomingRing, stopOutgoingRingback} from '../utils/callRing';
@@ -240,6 +240,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
             try {
                 const authorizedHub = trackHub(await createAuthorizedSignalHub(callId, [peerId]));
                 await sendAuthorizedSignalInvite(authorizedHub.session, peerId, {audioOnly});
+                listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
             } catch (e) {
                 // Keep the established topic as a compatibility fallback until
                 // accept, decline, and WebRTC negotiation use the session too.
@@ -349,7 +350,7 @@ export function listenVideoCall() {
     };
 }
 
-function listenAccept(userId, peerId) {
+function listenAccept(userId, peerId, authorizedHub = null) {
     return (dispatch, getState) => {
         const config = getConfig(getState());
         const user = getUser(getState(), userId);
@@ -359,12 +360,13 @@ function listenAccept(userId, peerId) {
             return;
         }
 
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+		const accepthub = authorizedHub || trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
         accepthub.subscribe('all').on('data', () => {
             debug('received call hub event');
         });
 
-        accepthub.subscribe(`accept-${peerId}`).on('data', (acceptedUserId) => {
+		accepthub.subscribe(`accept-${peerId}`).on('data', (accepted) => {
+			const acceptedUserId = authorizedHub && accepted && accepted.type === 'accept' ? accepted.userId : accepted;
             const {peerAccepted} = pluginState(getState);
             if (acceptedUserId !== userId) {
                 return;
@@ -378,7 +380,7 @@ function listenAccept(userId, peerId) {
 
             const iceServers = buildIceServers(stun2, turn2, tu2, tc2);
 
-            const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${callPeerId}`));
+			const callhub = authorizedHub || trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${callPeerId}`));
             const sw = trackSwarm(swarm(
                 callhub,
                 {
@@ -501,23 +503,24 @@ export function acceptCall() {
         clearIncomingCancelListener();
         const user = getCurrentUser(getState());
         const config = getConfig(getState());
-        const {callPeerId, peerAccepted} = pluginState(getState);
+		const {callPeerId, peerAccepted, activeSignalSessionId, activeCallId} = pluginState(getState);
 
         if (!user || !user.id) {
             return;
         }
 
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+		const authorizedHub = activeSignalSessionId ? trackHub(authorizedSignalHub({version: 1, sessionId: activeSignalSessionId, callId: activeCallId})) : null;
+		const accepthub = authorizedHub || trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
         accepthub.subscribe('all').on('data', () => {
             debug('received call hub event');
         });
-        accepthub.broadcast(`accept-${user.id}`, callPeerId);
+		accepthub.broadcast(`accept-${user.id}`, authorizedHub ? {type: 'accept', userId: user.id} : callPeerId);
         debug('acceptCall', peerAccepted);
         const {stunServer, turnServer, turnServerUsername, turnServerCredential} = pluginState(getState);
 
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`));
+		const callhub = authorizedHub || trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`));
         const sw = trackSwarm(swarm(
             callhub,
             {
