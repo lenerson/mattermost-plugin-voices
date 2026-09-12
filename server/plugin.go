@@ -61,6 +61,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleSignalStream(w, r)
 	case "/v1/signal/sessions":
 		p.handleSignalSessionCreate(w, r)
+	case "/v1/signal/invite":
+		p.handleSignalInvite(w, r)
 	default:
 		http.NotFound(w, r)
 	}

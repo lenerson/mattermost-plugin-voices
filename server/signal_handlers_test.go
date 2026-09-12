@@ -162,6 +162,30 @@ func TestSignalSessionCreateReturnsSessionForAuthenticatedCaller(t *testing.T) {
 	assert.NoError(t, p.getSignalSessions().authorize(response.SessionID, "call-1", "user-2"))
 }
 
+func TestSignalInviteDeliversOnlyToAuthorizedTargetInbox(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+
+	ch, unsub := p.getSignal().subscribe(signalInboxTopic("user-2"))
+	defer unsub()
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"sessionId":%q,"callId":"call-1","targetId":"user-2","payload":{"audioOnly":true}}`, session.ID)
+	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/invite", strings.NewReader(body)))
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	select {
+	case msg := <-ch:
+		var envelope signalEnvelope
+		require.NoError(t, json.Unmarshal(msg, &envelope))
+		assert.Equal(t, "invite", envelope.Type)
+		assert.Equal(t, "user-1", envelope.SenderID)
+		assert.Equal(t, session.ID, envelope.SessionID)
+	case <-time.After(time.Second):
+		t.Fatal("target inbox did not receive signal invite")
+	}
+}
+
 // --- /v1/signal/stream ----------------------------------------------------
 
 func TestSignalStreamRejectsNonGET(t *testing.T) {

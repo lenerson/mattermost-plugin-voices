@@ -100,7 +100,13 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 	}
 	topic := r.URL.Query().Get("topic")
 	sessionID := r.URL.Query().Get("sessionId")
-	if sessionID != "" {
+	if r.URL.Query().Get("inbox") == "true" {
+		if topic != "" || sessionID != "" {
+			http.Error(w, "invalid signal inbox", http.StatusBadRequest)
+			return
+		}
+		topic = signalInboxTopic(r.Header.Get("Mattermost-User-Id"))
+	} else if sessionID != "" {
 		if topic != "" || p.getSignalSessions().authorize(sessionID, "", r.Header.Get("Mattermost-User-Id")) != nil {
 			http.Error(w, "signal session access denied", http.StatusForbidden)
 			return
@@ -150,6 +156,44 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+// handleSignalInvite delivers a session invitation through the target user's
+// private inbox. Both sender and target must already belong to the session.
+func (p *Plugin) handleSignalInvite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+
+	var body struct {
+		SessionID string          `json:"sessionId"`
+		CallID    string          `json:"callId"`
+		TargetID  string          `json:"targetId"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.TargetID) == "" || !json.Valid(body.Payload) {
+		http.Error(w, "invalid signal invite", http.StatusBadRequest)
+		return
+	}
+	senderID := r.Header.Get("Mattermost-User-Id")
+	if p.getSignalSessions().authorize(body.SessionID, body.CallID, senderID) != nil || p.getSignalSessions().authorize(body.SessionID, body.CallID, body.TargetID) != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
+		return
+	}
+
+	encoded, err := json.Marshal(signalEnvelope{Version: signalProtocolVersion, SessionID: body.SessionID, CallID: body.CallID, Type: "invite", SenderID: senderID, Payload: body.Payload})
+	if err != nil {
+		http.Error(w, "could not encode signal invite", http.StatusInternalServerError)
+		return
+	}
+	p.getSignal().publish(signalInboxTopic(body.TargetID), encoded)
+	w.WriteHeader(http.StatusOK)
 }
 
 func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Request) {

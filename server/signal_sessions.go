@@ -111,3 +111,7 @@ func (s *signalSessionStore) authorize(sessionID, callID, userID string) error {
 func signalSessionTopic(sessionID string) string {
 	return "session/" + sessionID
 }
+
+func signalInboxTopic(userID string) string {
+	return "inbox/" + userID
+}
