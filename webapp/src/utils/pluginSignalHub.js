@@ -43,8 +43,9 @@ function noop() {
     /* default callback */
 }
 
-function createSubscribeStream(topic) {
-    const url = `/plugins/${pluginId}/v1/signal/stream?topic=${encodeURIComponent(topic)}`;
+function createSubscribeStream(topic, sessionId = '') {
+    const query = sessionId ? `sessionId=${encodeURIComponent(sessionId)}` : `topic=${encodeURIComponent(topic)}`;
+    const url = `/plugins/${pluginId}/v1/signal/stream?${query}`;
     const es = new EventSource(url);
 
     const stream = new Readable({
@@ -69,10 +70,22 @@ function createSubscribeStream(topic) {
     es.onmessage = (ev) => {
         try {
             const data = JSON.parse(ev.data);
+            let message = data;
+            if (sessionId) {
+                if (data.version !== 1 || !data.senderId || !data.payload) {
+                    throw new Error('Invalid authorized signal envelope');
+                }
+                message = data.payload;
+                if (message && typeof message === 'object' && !Array.isArray(message)) {
+                    // The outer envelope is authenticated by the server. Do
+                    // not let a WebRTC payload impersonate another peer.
+                    message = Object.assign({}, message, {fromUserId: data.senderId});
+                }
+            }
             if (!opened) {
                 fireOpen();
             }
-            stream.push(data);
+            stream.push(message);
         } catch (e) {
             stream.destroy(e);
         }
@@ -87,7 +100,7 @@ function createSubscribeStream(topic) {
          * stop being announced after the tab had been sitting there a while.
          */
         fireOpen();
-        debug(`[signal] stream interrupted on ${topic}; EventSource will retry`);
+        debug(`[signal] stream interrupted on ${sessionId || topic}; EventSource will retry`);
     };
 
     const origDestroy = stream.destroy.bind(stream);
@@ -130,6 +143,71 @@ export default function pluginSignalHub(appName) {
             streams.forEach((s) => {
                 try {
                     s.destroy();
+                } catch (e) {
+                    // ignore
+                }
+            });
+            streams.length = 0;
+            const fn = typeof cb === 'function' ? cb : noop;
+            setTimeout(fn, 0);
+        },
+    };
+
+    return hub;
+}
+
+/**
+ * Creates a hub backed by a server-authorized signal session. Its public
+ * surface matches pluginSignalHub so webrtc-swarm can migrate without knowing
+ * whether the transport uses a legacy topic or an authorized session.
+ */
+export async function createAuthorizedSignalHub(callId, participants) {
+    const response = await axios.post(`/plugins/${pluginId}/v1/signal/sessions`, {
+        callId,
+        participants,
+    }, {
+        headers: pluginCookieAuthHeaders(),
+        withCredentials: true,
+    });
+
+    const session = response.data || {};
+    if (session.version !== 1 || !session.sessionId || session.callId !== callId) {
+        throw new Error('Invalid authorized signal session response');
+    }
+
+    return authorizedSignalHub(session);
+}
+
+export function authorizedSignalHub(session) {
+    const streams = [];
+
+    const hub = {
+        app: `signal-session-${session.sessionId}`,
+
+        subscribe() {
+            const stream = createSubscribeStream('', session.sessionId);
+            streams.push(stream);
+            return stream;
+        },
+
+        broadcast(_channel, message, cb) {
+            const done = typeof cb === 'function' ? cb : noop;
+            axios.post(`/plugins/${pluginId}/v1/signal/publish`, {
+                version: session.version,
+                sessionId: session.sessionId,
+                callId: session.callId,
+                type: 'webrtc',
+                payload: message,
+            }, {
+                headers: pluginCookieAuthHeaders(),
+                withCredentials: true,
+            }).then(() => done()).catch((err) => done(err));
+        },
+
+        close(cb) {
+            streams.forEach((stream) => {
+                try {
+                    stream.destroy();
                 } catch (e) {
                     // ignore
                 }
