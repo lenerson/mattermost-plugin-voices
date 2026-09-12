@@ -102,10 +102,10 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 
 	api.On("CreatePost", mock.AnythingOfType("*model.Post")).Return(
 		func(post *model.Post) *model.Post {
-			copyOfPost := *post
-			copyOfPost.Id = "post-" + strconv.Itoa(len(kv.posts)+1)
-			kv.posts[copyOfPost.Id] = &copyOfPost
-			return &copyOfPost
+			// model.Post contains a mutex, so test fixtures must not copy it by value.
+			post.Id = "post-" + strconv.Itoa(len(kv.posts)+1)
+			kv.posts[post.Id] = post
+			return post
 		},
 		func(post *model.Post) *model.AppError {
 			return nil
@@ -123,9 +123,8 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 
 	api.On("UpdatePost", mock.AnythingOfType("*model.Post")).Return(
 		func(post *model.Post) *model.Post {
-			copyOfPost := *post
-			kv.posts[post.Id] = &copyOfPost
-			return &copyOfPost
+			kv.posts[post.Id] = post
+			return post
 		},
 		func(post *model.Post) *model.AppError {
 			return nil
