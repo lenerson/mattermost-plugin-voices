@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
-const maxSignalTopicLen = 1024
+const (
+	maxSignalTopicLen         = 1024
+	maxSignalRequestBodyBytes = 64 * 1024
+)
 
 /*
  * How often to send an SSE comment frame on an otherwise silent stream.
@@ -29,14 +33,50 @@ func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
 	var body struct {
-		Topic   string          `json:"topic"`
-		Payload json.RawMessage `json:"payload"`
+		Topic     string          `json:"topic"`
+		Version   int             `json:"version"`
+		SessionID string          `json:"sessionId"`
+		CallID    string          `json:"callId"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+
+	if body.Version != 0 || body.SessionID != "" || body.CallID != "" || body.Type != "" {
+		envelope := signalEnvelope{
+			Version:   body.Version,
+			SessionID: body.SessionID,
+			CallID:    body.CallID,
+			Type:      body.Type,
+			SenderID:  r.Header.Get("Mattermost-User-Id"),
+			Payload:   body.Payload,
+		}
+		if body.Topic != "" || !isValidSignalEnvelope(envelope) {
+			http.Error(w, "invalid signal envelope", http.StatusBadRequest)
+			return
+		}
+		if err := p.getSignalSessions().authorize(envelope.SessionID, envelope.CallID, envelope.SenderID); err != nil {
+			http.Error(w, "signal session access denied", http.StatusForbidden)
+			return
+		}
+
+		encoded, err := json.Marshal(envelope)
+		if err != nil {
+			http.Error(w, "could not encode signal envelope", http.StatusInternalServerError)
+			return
+		}
+		p.getSignal().publish(signalSessionTopic(envelope.SessionID), encoded)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	// Legacy topics remain available only while the webapp migrates to the
+	// authorized envelope protocol. New code must use a signal session.
 	if body.Topic == "" || len(body.Topic) > maxSignalTopicLen {
 		http.Error(w, "invalid topic", http.StatusBadRequest)
 		return
@@ -59,7 +99,14 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	topic := r.URL.Query().Get("topic")
-	if topic == "" || len(topic) > maxSignalTopicLen {
+	sessionID := r.URL.Query().Get("sessionId")
+	if sessionID != "" {
+		if topic != "" || p.getSignalSessions().authorize(sessionID, "", r.Header.Get("Mattermost-User-Id")) != nil {
+			http.Error(w, "signal session access denied", http.StatusForbidden)
+			return
+		}
+		topic = signalSessionTopic(sessionID)
+	} else if topic == "" || len(topic) > maxSignalTopicLen {
 		http.Error(w, "invalid topic", http.StatusBadRequest)
 		return
 	}
@@ -103,4 +150,54 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
+	var body struct {
+		CallID       string   `json:"callId"`
+		Participants []string `json:"participants"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	session, err := p.getSignalSessions().create(r.Header.Get("Mattermost-User-Id"), body.CallID, body.Participants)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == errInvalidSignalSession {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Version   int    `json:"version"`
+		SessionID string `json:"sessionId"`
+		CallID    string `json:"callId"`
+	}{
+		Version:   signalProtocolVersion,
+		SessionID: session.ID,
+		CallID:    session.CallID,
+	})
+}
+
+func isValidSignalEnvelope(envelope signalEnvelope) bool {
+	return envelope.Version == signalProtocolVersion &&
+		strings.TrimSpace(envelope.SessionID) != "" &&
+		strings.TrimSpace(envelope.CallID) != "" && len(envelope.CallID) <= maxSignalCallIDLen &&
+		strings.TrimSpace(envelope.Type) != "" && len(envelope.Type) <= maxSignalMessageTypeLen &&
+		len(envelope.Payload) > 0 && json.Valid(envelope.Payload)
 }

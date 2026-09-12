@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,6 +105,63 @@ func TestSignalPublishDefaultsMissingPayloadToEmptyObject(t *testing.T) {
 	}
 }
 
+func TestSignalPublishAuthorizedEnvelopeDerivesSenderFromRequest(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+
+	ch, unsub := p.getSignal().subscribe(signalSessionTopic(session.ID))
+	defer unsub()
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"version":1,"sessionId":%q,"callId":"call-1","type":"webrtc","payload":{"candidate":"x"}}`, session.ID)
+	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish", strings.NewReader(body)))
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	select {
+	case msg := <-ch:
+		var envelope signalEnvelope
+		require.NoError(t, json.Unmarshal(msg, &envelope))
+		assert.Equal(t, "user-1", envelope.SenderID)
+		assert.Equal(t, session.ID, envelope.SessionID)
+		assert.JSONEq(t, `{"candidate":"x"}`, string(envelope.Payload))
+	case <-time.After(time.Second):
+		t.Fatal("subscriber did not receive authorized envelope")
+	}
+}
+
+func TestSignalPublishAuthorizedEnvelopeRejectsOutsider(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"version":1,"sessionId":%q,"callId":"call-1","type":"webrtc","payload":{}}`, session.ID)
+	r := authReq(http.MethodPost, "/v1/signal/publish", strings.NewReader(body))
+	r.Header.Set("Mattermost-User-Id", "outsider")
+	p.ServeHTTP(nil, w, r)
+	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
+}
+
+func TestSignalSessionCreateReturnsSessionForAuthenticatedCaller(t *testing.T) {
+	p := &Plugin{}
+	w := httptest.NewRecorder()
+	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/sessions",
+		strings.NewReader(`{"callId":"call-1","participants":["user-2"]}`)))
+	require.Equal(t, http.StatusOK, w.Result().StatusCode)
+
+	var response struct {
+		Version   int    `json:"version"`
+		SessionID string `json:"sessionId"`
+		CallID    string `json:"callId"`
+	}
+	require.NoError(t, json.NewDecoder(w.Result().Body).Decode(&response))
+	assert.Equal(t, signalProtocolVersion, response.Version)
+	assert.NotEmpty(t, response.SessionID)
+	assert.Equal(t, "call-1", response.CallID)
+	assert.NoError(t, p.getSignalSessions().authorize(response.SessionID, "call-1", "user-2"))
+}
+
 // --- /v1/signal/stream ----------------------------------------------------
 
 func TestSignalStreamRejectsNonGET(t *testing.T) {
@@ -135,6 +193,17 @@ func TestSignalStreamRejectsOversizedTopic(t *testing.T) {
 	w := httptest.NewRecorder()
 	p.ServeHTTP(nil, w, authReq(http.MethodGet, "/v1/signal/stream?topic="+big, nil))
 	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+}
+
+func TestSignalStreamRejectsUnauthorizedSession(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	r := authReq(http.MethodGet, "/v1/signal/stream?sessionId="+session.ID, nil)
+	r.Header.Set("Mattermost-User-Id", "outsider")
+	p.ServeHTTP(nil, w, r)
+	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
 }
 
 // flushRecorder is an http.ResponseWriter that also implements http.Flusher

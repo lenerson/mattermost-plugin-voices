@@ -23,6 +23,9 @@ type Plugin struct {
 
 	signalOnce sync.Once
 	signal     *signalBroker
+
+	signalSessionsOnce sync.Once
+	signalSessions     *signalSessionStore
 }
 
 func (p *Plugin) getSignal() *signalBroker {
@@ -30,6 +33,13 @@ func (p *Plugin) getSignal() *signalBroker {
 		p.signal = newSignalBroker()
 	})
 	return p.signal
+}
+
+func (p *Plugin) getSignalSessions() *signalSessionStore {
+	p.signalSessionsOnce.Do(func() {
+		p.signalSessions = newSignalSessionStore()
+	})
+	return p.signalSessions
 }
 
 // ServeHTTP handles HTTP requests.
@@ -49,6 +59,8 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleSignalPublish(w, r)
 	case "/v1/signal/stream":
 		p.handleSignalStream(w, r)
+	case "/v1/signal/sessions":
+		p.handleSignalSessionCreate(w, r)
 	default:
 		http.NotFound(w, r)
 	}
