@@ -107,6 +107,22 @@ func TestSignalBrokerUnsubscribeStopsDelivery(t *testing.T) {
 	b.publish("room", []byte(`{}`))
 }
 
+func TestSignalBrokerUnsubscribeIsIdempotentAndCleansUpTopic(t *testing.T) {
+	b := newSignalBroker()
+	ch, unsub := b.subscribe("room")
+
+	unsub()
+	unsub()
+
+	_, ok := <-ch
+	assert.False(t, ok, "channel should be closed after unsubscribe")
+
+	b.mu.RLock()
+	_, found := b.subs["room"]
+	b.mu.RUnlock()
+	assert.False(t, found, "empty topics should be removed")
+}
+
 func TestSignalBrokerUnsubscribeOnlyRemovesSelf(t *testing.T) {
 	b := newSignalBroker()
 	ch1, unsub1 := b.subscribe("room")
@@ -162,7 +178,9 @@ func TestSignalBrokerDropsWhenSubscriberBufferFull(t *testing.T) {
 }
 
 func TestSignalBrokerConcurrentSubscribePublishUnsubscribe(t *testing.T) {
-	// Exercises the RWMutex paths; the test is primarily for `go test -race`.
+	// Publish and unsubscribe overlap deliberately. Before subscriber lifecycle
+	// synchronization, publish could hold a channel snapshot while unsubscribe
+	// closed that same channel, causing a "send on closed channel" panic.
 	b := newSignalBroker()
 
 	const (
@@ -211,7 +229,7 @@ func TestSignalBrokerConcurrentSubscribePublishUnsubscribe(t *testing.T) {
 		}()
 	}
 
-	pubWG.Wait()
 	close(stopRead)
+	pubWG.Wait()
 	wg.Wait()
 }
