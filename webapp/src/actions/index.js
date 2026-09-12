@@ -14,7 +14,7 @@ import ActionTypes from '../action_types';
 
 import debug from '../utils/debug';
 import {buildIceServers} from '../utils/iceServers';
-import pluginSignalHub from '../utils/pluginSignalHub';
+import pluginSignalHub, {authorizedSignalInbox} from '../utils/pluginSignalHub';
 import {getDirectChannelIdForPeer, ensureDirectChannelId} from '../utils/dmChannel';
 import {createVideoInvitePost, sendCallDeclinedEphemeral, newCallId} from '../utils/callInvitePosts';
 import {startIncomingRing, startOutgoingRingback, stopIncomingRing, stopOutgoingRingback} from '../utils/callRing';
@@ -153,6 +153,19 @@ function parseIncomingCallSignal(raw) {
     return null;
 }
 
+function parseAuthorizedCallInvite(raw) {
+    if (!raw || typeof raw !== 'object' || raw.version !== 1 || raw.type !== 'invite' || !raw.senderId || !raw.sessionId || !raw.callId) {
+        return null;
+    }
+    const payload = raw.payload || {};
+    return {
+        callerId: raw.senderId,
+        callId: raw.callId,
+        audioOnly: Boolean(payload.audioOnly),
+        signalSessionId: raw.sessionId,
+    };
+}
+
 export function makeVideoCall(peerId, {audioOnly = false} = {}) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
@@ -229,7 +242,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
     };
 }
 
-export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
+export function receiveVideoCall(peerId, callId = null, audioOnly = false, signalSessionId = null) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
         const {callIncoming, callOutgoing} = pluginState(getState);
@@ -263,6 +276,7 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
                 peerId,
                 callId,
                 audioOnly,
+                signalSessionId,
             },
         });
 
@@ -299,6 +313,16 @@ export function listenVideoCall() {
         }
 
         const callhub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`);
+
+        const inbox = authorizedSignalInbox();
+        inbox.on('data', (raw) => {
+            const invite = parseAuthorizedCallInvite(raw);
+            if (!invite) {
+                return;
+            }
+            debug(`authorized call from ${invite.callerId}`, invite.callId);
+            receiveVideoCall(invite.callerId, invite.callId, invite.audioOnly, invite.signalSessionId)(dispatch, getState);
+        });
 
         debug(`listening for calls for ${user.id}`);
         callhub.subscribe(`call-${user.id}`).on('data', (raw) => {

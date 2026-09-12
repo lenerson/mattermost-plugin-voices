@@ -70,4 +70,17 @@ describe('call lifecycle', () => {
 
         expect(state.mediaError).toBe('');
     });
+
+    test('keeps the authorized signal session for an incoming call', () => {
+        const state = reduce([
+            INIT,
+            {
+                type: ActionTypes.RECEIVE_VIDEO_CALL,
+                data: {peerId: 'p2', callId: 'c2', signalSessionId: 'session-2'},
+            },
+        ]);
+
+        expect(state.activeSignalSessionId).toBe('session-2');
+        expect(reducer(state, {type: ActionTypes.END_CALL}).activeSignalSessionId).toBeNull();
+    });
 });
