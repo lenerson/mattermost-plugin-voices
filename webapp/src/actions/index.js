@@ -113,7 +113,7 @@ export function loadConfig() {
 
         axios.get(`/plugins/${pluginId}/v1/config`).then((response) => {
             if (response.status === 200) {
-                debug('loaded config', response.data);
+                debug('loaded config');
                 dispatch({
                     type: ActionTypes.LOAD_CONFIG,
                     data: response.data,
@@ -327,8 +327,8 @@ function listenAccept(userId, peerId) {
         }
 
         const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-        accepthub.subscribe('all').on('data', ({...a}) => {
-            debug('HUB DATA', a);
+        accepthub.subscribe('all').on('data', () => {
+            debug('received call hub event');
         });
 
         accepthub.subscribe(`accept-${peerId}`).on('data', (acceptedUserId) => {
@@ -360,13 +360,13 @@ function listenAccept(userId, peerId) {
             ), 'caller', iceServers);
 
             sw.on('peer', (peer, id) => {
-                debug('Peer ', peer, id);
+                debug('peer connected', id);
 
                 peer.on('data', (payload) => {
                     cPeer = peer;
 
                     const data = JSON.parse(payload.toString());
-                    debug('received data', {id, data});
+                    debug('received peer data', {id, type: data.type});
 
                     if (data.type === 'receivedHandshake') {
                         captureAndShareMedia(peer, dispatch, getState);
@@ -425,7 +425,7 @@ function listenAccept(userId, peerId) {
                 });
 
                 peer.on('stream', (streamObj) => {
-                    debug('Stream', peer, id);
+                    debug('received peer stream', id);
                     dispatch({
                         type: ActionTypes.PEER_STREAM_RECEIVED,
                         data: streamObj,
@@ -433,8 +433,8 @@ function listenAccept(userId, peerId) {
                 });
             });
 
-            sw.on('disconnect', (peer, id) => {
-                debug('disconnected from a peer:', peer, id);
+            sw.on('disconnect', (_peer, id) => {
+                debug('disconnected from a peer:', id);
                 cPeer = null;
                 dispatch({
                     type: ActionTypes.PEER_LOST,
@@ -475,8 +475,8 @@ export function acceptCall() {
         }
 
         const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-        accepthub.subscribe('all').on('data', ({...a}) => {
-            debug('HUB DATA', a);
+        accepthub.subscribe('all').on('data', () => {
+            debug('received call hub event');
         });
         accepthub.broadcast(`accept-${user.id}`, callPeerId);
         debug('acceptCall', peerAccepted);
@@ -506,7 +506,7 @@ export function acceptCall() {
 
                 const data = JSON.parse(payload.toString());
 
-                debug('received data', {id, data});
+                debug('received peer data', {id, type: data.type});
 
                 if (data.type === 'receivedHandshake') {
                     captureAndShareMedia(peer, dispatch, getState);
@@ -565,7 +565,7 @@ export function acceptCall() {
             });
 
             peer.on('stream', (streamObj) => {
-                debug('Stream', peer, id);
+                debug('received peer stream', id);
                 dispatch({
                     type: ActionTypes.PEER_STREAM_RECEIVED,
                     data: streamObj,
@@ -573,8 +573,8 @@ export function acceptCall() {
             });
         });
 
-        sw.on('disconnect', (peer, id) => {
-            debug('disconnected from a peer:', peer, id);
+        sw.on('disconnect', (_peer, id) => {
+            debug('disconnected from a peer:', id);
             cPeer = null;
             dispatch({
                 type: ActionTypes.PEER_LOST,

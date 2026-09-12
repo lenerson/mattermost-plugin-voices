@@ -1031,7 +1031,7 @@ export class AudioCallPanel extends React.Component {
         if (!swarmInitialized) {
             this.setState({swarmInitialized: true});
         }
-        debug('HUB DATA', message);
+        debug('voice hub message received', {type: message && message.type});
         if (message.type === 'connect' && message.from !== myUuid) {
             if (!peerStreams[message.from] && message.fromUsername) {
                 debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
@@ -1062,7 +1062,7 @@ export class AudioCallPanel extends React.Component {
     handleConnect(peer, id) {
         const {userId, audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
 
-        debug('connected to a new peer:', {id, peer});
+        debug('connected to a new voice peer:', id);
 
         const peerStreams = Object.assign({}, this.state.peerStreams);
         const pkg = {
@@ -1075,7 +1075,7 @@ export class AudioCallPanel extends React.Component {
 
         peer.on('stream', (stream) => {
             const nextPeers = Object.assign({}, this.state.peerStreams);
-            debug('received stream', stream);
+            debug('received voice stream', id);
             nextPeers[id].stream = stream;
             this.setState({peerStreams: nextPeers});
             const playBacks = Object.assign({}, this.state.playBacks);
@@ -1090,7 +1090,7 @@ export class AudioCallPanel extends React.Component {
         peer.on('data', (payload) => {
             const data = JSON.parse(payload.toString());
 
-            debug('received data', {id, data});
+            debug('received voice peer data', {id, type: data.type});
 
             if (data.type === 'receivedHandshake') {
                 if (this.currentMyStream) {
@@ -1132,8 +1132,8 @@ export class AudioCallPanel extends React.Component {
         }));
     }
 
-    handleDisconnect(peer, id) {
-        debug('disconnected from a peer:', peer, id);
+    handleDisconnect(_peer, id) {
+        debug('disconnected from a peer:', id);
 
         const peerStreams = Object.assign({}, this.state.peerStreams);
 
@@ -1476,8 +1476,6 @@ export class AudioCallPanel extends React.Component {
             voiceInviteResponseError,
         } = this.state;
         const style = getStyle();
-
-        debug('Render', userId, initialized, swarmInitialized, this.state, this.props);
 
         const {isSystemAdmin} = this.props;
         const selfName = this.props.displayName || 'You';
