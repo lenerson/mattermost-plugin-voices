@@ -3,7 +3,7 @@ import axios from 'axios';
 
 jest.mock('manifest', () => ({id: 'plugin-id'}), {virtual: true});
 
-import {authorizedSignalHub, authorizedSignalInbox, createAuthorizedSignalHub} from './pluginSignalHub';
+import {authorizedSignalHub, authorizedSignalInbox, createAuthorizedSignalHub, sendAuthorizedSignalInvite} from './pluginSignalHub';
 
 jest.mock('axios');
 
@@ -104,5 +104,18 @@ describe('authorized signal hub', () => {
 
         stream.destroy();
         expect(eventSource.close).toHaveBeenCalled();
+    });
+
+    test('delivers an invite using the server-created session', async () => {
+        axios.post.mockResolvedValue({});
+        const session = {sessionId: 'session-1', callId: 'call-1'};
+
+        await sendAuthorizedSignalInvite(session, 'callee', {audioOnly: true});
+
+        expect(axios.post).toHaveBeenCalledWith(
+            expect.stringContaining('/v1/signal/invite'),
+            {sessionId: 'session-1', callId: 'call-1', targetId: 'callee', payload: {audioOnly: true}},
+            expect.objectContaining({withCredentials: true}),
+        );
     });
 });

@@ -178,11 +178,24 @@ export async function createAuthorizedSignalHub(callId, participants) {
     return authorizedSignalHub(session);
 }
 
+export function sendAuthorizedSignalInvite(session, targetId, payload) {
+    return axios.post(`/plugins/${pluginId}/v1/signal/invite`, {
+        sessionId: session.sessionId,
+        callId: session.callId,
+        targetId,
+        payload,
+    }, {
+        headers: pluginCookieAuthHeaders(),
+        withCredentials: true,
+    });
+}
+
 export function authorizedSignalHub(session) {
     const streams = [];
 
     const hub = {
         app: `signal-session-${session.sessionId}`,
+        session,
 
         subscribe() {
             const stream = createSubscribeStream('', session.sessionId);
