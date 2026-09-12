@@ -43,8 +43,8 @@ function noop() {
     /* default callback */
 }
 
-function createSubscribeStream(topic, sessionId = '') {
-    const query = sessionId ? `sessionId=${encodeURIComponent(sessionId)}` : `topic=${encodeURIComponent(topic)}`;
+function createSubscribeStream(topic, sessionId = '', inbox = false) {
+    const query = inbox ? 'inbox=true' : (sessionId ? `sessionId=${encodeURIComponent(sessionId)}` : `topic=${encodeURIComponent(topic)}`);
     const url = `/plugins/${pluginId}/v1/signal/stream?${query}`;
     const es = new EventSource(url);
 
@@ -219,4 +219,10 @@ export function authorizedSignalHub(session) {
     };
 
     return hub;
+}
+
+// The server derives the inbox identity from the authenticated Mattermost
+// request. The browser never supplies a user id or a topic for this stream.
+export function authorizedSignalInbox() {
+    return createSubscribeStream('', '', true);
 }

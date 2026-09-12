@@ -3,7 +3,7 @@ import axios from 'axios';
 
 jest.mock('manifest', () => ({id: 'plugin-id'}), {virtual: true});
 
-import {authorizedSignalHub, createAuthorizedSignalHub} from './pluginSignalHub';
+import {authorizedSignalHub, authorizedSignalInbox, createAuthorizedSignalHub} from './pluginSignalHub';
 
 jest.mock('axios');
 
@@ -94,5 +94,15 @@ describe('authorized signal hub', () => {
             {callId: 'call-1', participants: ['callee']},
             expect.objectContaining({withCredentials: true}),
         );
+    });
+
+    test('subscribes to the authenticated private inbox without a user topic', () => {
+        const stream = authorizedSignalInbox();
+
+        expect(global.EventSource).toHaveBeenCalledWith(expect.stringContaining('inbox=true'));
+        expect(global.EventSource).not.toHaveBeenCalledWith(expect.stringContaining('user-'));
+
+        stream.destroy();
+        expect(eventSource.close).toHaveBeenCalled();
     });
 });
