@@ -14,7 +14,7 @@ import ActionTypes from '../action_types';
 
 import debug from '../utils/debug';
 import {buildIceServers} from '../utils/iceServers';
-import pluginSignalHub, {authorizedSignalInbox} from '../utils/pluginSignalHub';
+import pluginSignalHub, {authorizedSignalInbox, createAuthorizedSignalHub, sendAuthorizedSignalInvite} from '../utils/pluginSignalHub';
 import {getDirectChannelIdForPeer, ensureDirectChannelId} from '../utils/dmChannel';
 import {createVideoInvitePost, sendCallDeclinedEphemeral, newCallId} from '../utils/callInvitePosts';
 import {startIncomingRing, startOutgoingRingback, stopIncomingRing, stopOutgoingRingback} from '../utils/callRing';
@@ -235,6 +235,15 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 await createVideoInvitePost(channelId, user, peerId, callId);
             } catch (e) {
                 debug('Video call invite post failed (call signalling still proceeds)', e);
+            }
+
+            try {
+                const authorizedHub = trackHub(await createAuthorizedSignalHub(callId, [peerId]));
+                await sendAuthorizedSignalInvite(authorizedHub.session, peerId, {audioOnly});
+            } catch (e) {
+                // Keep the established topic as a compatibility fallback until
+                // accept, decline, and WebRTC negotiation use the session too.
+                debug('Authorized call invite failed; using legacy signal', e);
             }
             debug(`calling ${peerId} (${callId})`);
             callhub.broadcast(`call-${peerId}`, {callerId: user.id, callId, audioOnly});
