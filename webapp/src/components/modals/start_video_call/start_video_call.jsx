@@ -160,8 +160,6 @@ export default class StartVideoCallModal extends PureComponent {
         const {fullscreen} = this.state;
         const s = styles;
 
-        debug('[start_video_call] props', this.props);
-
         if (!visible) {
             return null;
         }
