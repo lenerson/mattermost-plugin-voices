@@ -8,7 +8,7 @@ import PropTypes from 'prop-types';
 import swarm from 'webrtc-swarm';
 
 import {VOICE_INVITE_ACCEPTED, VOICE_INVITE_DECLINED} from '../../../constants/voiceInvite';
-import pluginSignalHub, {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
+import {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
@@ -988,46 +988,43 @@ export class AudioCallPanel extends React.Component {
         const myUuid = this.props.userId;
         const myUsername = this.props.username;
         const myDisplayName = this.props.displayName;
-        const voiceHubName = `mattermost-webrtc-video-${config.DiagnosticId}-voice-${activeRoom.roomId}`;
-        debug('Voice hub', voiceHubName);
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        let hub;
         try {
-            hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
-        } catch (err) {
-            debug('Authorized voice session failed; using legacy signal', err);
-            hub = pluginSignalHub(voiceHubName);
-        }
-        hub.subscribe('all').on('data', this.handleHubData.bind(this));
+            const hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
+            if (!this.state.activeRoom || this.state.activeRoom.roomId !== activeRoom.roomId) {
+                hub.close();
+                return;
+            }
 
-        const sw = swarm(
-            hub,
-            {
-                config: {iceServers},
-                uuid: myUuid,
-                wrap: (outgoingSignalingData) => {
-                    outgoingSignalingData.fromUserId = userId;
-                    outgoingSignalingData.fromUsername = myUsername;
-                    outgoingSignalingData.fromDisplayName = myDisplayName;
-                    return outgoingSignalingData;
+            hub.subscribe('all').on('data', this.handleHubData.bind(this));
+
+            const sw = swarm(
+                hub,
+                {
+                    config: {iceServers},
+                    uuid: myUuid,
+                    wrap: (outgoingSignalingData) => {
+                        outgoingSignalingData.fromUserId = userId;
+                        outgoingSignalingData.fromUsername = myUsername;
+                        outgoingSignalingData.fromDisplayName = myDisplayName;
+                        return outgoingSignalingData;
+                    },
                 },
-            },
-        );
+            );
 
-        this.swarmInstance = sw;
-        this.connectPending = false;
+            this.swarmInstance = sw;
+            sw.on('peer', this.handleConnect.bind(this));
+            sw.on('disconnect', this.handleDisconnect.bind(this));
 
-        sw.on('peer', this.handleConnect.bind(this));
-        sw.on('disconnect', this.handleDisconnect.bind(this));
-
-        hub.broadcast('all', {
-            type: 'connect',
-            from: myUuid,
-            fromUserId: userId,
-            fromUsername: myUsername,
-            fromDisplayName: myDisplayName,
-        });
+            hub.broadcast('all', {
+                type: 'connect', from: myUuid, fromUserId: userId, fromUsername: myUsername, fromDisplayName: myDisplayName,
+            });
+        } catch (err) {
+            debug('Authorized voice session failed', err);
+        } finally {
+            this.connectPending = false;
+        }
     }
 
     handleHubData(message) {

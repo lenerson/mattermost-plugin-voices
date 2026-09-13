@@ -1,5 +1,8 @@
 jest.mock('manifest', () => ({id: 'mattermost-webrtc-video'}), {virtual: true});
 jest.mock('webrtc-swarm', () => jest.fn());
+jest.mock('../../../utils/pluginSignalHub', () => ({
+    createAuthorizedSignalHub: jest.fn(),
+}));
 jest.mock('../../../utils/voiceRoomsApi', () => ({
     createVoiceRoom: jest.fn(),
     deleteVoiceRoom: jest.fn(),
@@ -18,12 +21,14 @@ jest.mock('../../../utils/voiceInvitesApi', () => ({
 }));
 
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {respondVoiceRoomInvite, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
 import {emitVoiceInvite, emitVoiceInviteDecision} from '../../../utils/voiceInviteEvents';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
+import swarm from 'webrtc-swarm';
 
 const VOICE_INVITE_TTL_MS = 5 * 60 * 1000;
 
@@ -313,6 +318,73 @@ describe('AudioCallPanel room directory', () => {
 
         panel.handleExclusivePresenceChange({userId: 'user-1', previousRoomId: 'room-1', roomId: 'room-2'});
         expect(panel.disconnectLocalRoom).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('AudioCallPanel authorized voice signaling', () => {
+    function createPanel() {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            username: 'anna',
+            displayName: 'Anna',
+            profilesById: {},
+            isSystemAdmin: false,
+            configLoaded: true,
+            config: {DiagnosticId: 'diagnostic-id'},
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        return panel;
+    }
+
+    beforeEach(() => {
+        createAuthorizedSignalHub.mockReset();
+        swarm.mockReset();
+    });
+
+    test('connects a room through its authorized shared session', async () => {
+        const stream = {on: jest.fn()};
+        const hub = {subscribe: jest.fn(() => stream), broadcast: jest.fn(), close: jest.fn()};
+        const swarmInstance = {on: jest.fn()};
+        createAuthorizedSignalHub.mockResolvedValue(hub);
+        swarm.mockReturnValue(swarmInstance);
+        const panel = createPanel();
+
+        await panel.connectToSwarm('user-1');
+
+        expect(createAuthorizedSignalHub).toHaveBeenCalledWith('voice-room-1', [], 'room-1');
+        expect(swarm).toHaveBeenCalledWith(hub, expect.objectContaining({uuid: 'user-1'}));
+        expect(hub.broadcast).toHaveBeenCalledWith('all', expect.objectContaining({type: 'connect', from: 'user-1'}));
+        expect(panel.connectPending).toBe(false);
+    });
+
+    test('does not create a swarm when authorized session creation fails', async () => {
+        createAuthorizedSignalHub.mockRejectedValue(new Error('session unavailable'));
+        const panel = createPanel();
+
+        await panel.connectToSwarm('user-1');
+
+        expect(swarm).not.toHaveBeenCalled();
+        expect(panel.swarmInstance).toBeUndefined();
+        expect(panel.connectPending).toBe(false);
+    });
+
+    test('closes a session created after the user has moved to another room', async () => {
+        let resolveSession;
+        const pendingSession = new Promise((resolve) => {
+            resolveSession = resolve;
+        });
+        const hub = {close: jest.fn(), subscribe: jest.fn(), broadcast: jest.fn()};
+        createAuthorizedSignalHub.mockReturnValue(pendingSession);
+        const panel = createPanel();
+
+        const connecting = panel.connectToSwarm('user-1');
+        panel.state.activeRoom = {roomId: 'room-2', name: 'Planning'};
+        resolveSession(hub);
+        await connecting;
+
+        expect(hub.close).toHaveBeenCalledTimes(1);
+        expect(swarm).not.toHaveBeenCalled();
+        expect(panel.connectPending).toBe(false);
     });
 });
 
