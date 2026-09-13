@@ -44,6 +44,10 @@ func (p *Plugin) getSignalSessions() *signalSessionStore {
 
 // ServeHTTP handles HTTP requests.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/signal/sessions/") {
+		p.handleSignalSessionClose(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/v1/config":
 		p.handleConfig(w, r)

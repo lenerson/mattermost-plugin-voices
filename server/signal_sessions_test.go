@@ -41,6 +41,16 @@ func TestSignalSessionStoreCloseRequiresOwner(t *testing.T) {
 	assert.ErrorIs(t, store.authorize(session.ID, "call-1", "caller"), errSignalSessionDenied)
 }
 
+func TestSignalSessionStoreLimitsSessionsPerOwner(t *testing.T) {
+	store := newSignalSessionStore()
+	for i := 0; i < maxSignalSessionsPerOwner; i++ {
+		_, err := store.create("caller", "call-"+string(rune('a'+i)), nil)
+		require.NoError(t, err)
+	}
+	_, err := store.create("caller", "one-too-many", nil)
+	assert.ErrorIs(t, err, errSignalSessionLimit)
+}
+
 func TestSignalSessionStoreRejectsInvalidInputs(t *testing.T) {
 	store := newSignalSessionStore()
 

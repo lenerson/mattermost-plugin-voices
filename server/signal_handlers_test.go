@@ -173,6 +173,23 @@ func TestSignalSessionCreateReturnsSessionForAuthenticatedCaller(t *testing.T) {
 	assert.NoError(t, p.getSignalSessions().authorize(response.SessionID, "call-1", "user-2"))
 }
 
+func TestSignalSessionCloseRequiresOwner(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	r := authReq(http.MethodDelete, "/v1/signal/sessions/"+session.ID, nil)
+	r.Header.Set("Mattermost-User-Id", "user-2")
+	p.ServeHTTP(nil, w, r)
+	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
+
+	w = httptest.NewRecorder()
+	p.ServeHTTP(nil, w, authReq(http.MethodDelete, "/v1/signal/sessions/"+session.ID, nil))
+	assert.Equal(t, http.StatusNoContent, w.Result().StatusCode)
+	assert.ErrorIs(t, p.getSignalSessions().authorize(session.ID, "call-1", "user-1"), errSignalSessionDenied)
+}
+
 func TestSignalInviteDeliversOnlyToAuthorizedTargetInbox(t *testing.T) {
 	p := &Plugin{}
 	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})

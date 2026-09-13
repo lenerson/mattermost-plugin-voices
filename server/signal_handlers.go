@@ -238,6 +238,27 @@ func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+func (p *Plugin) handleSignalSessionClose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/signal/sessions/")
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		http.Error(w, "invalid signal session", http.StatusBadRequest)
+		return
+	}
+	if err := p.getSignalSessions().close(sessionID, r.Header.Get("Mattermost-User-Id")); err != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func isValidSignalEnvelope(envelope signalEnvelope) bool {
 	return envelope.Version == signalProtocolVersion &&
 		strings.TrimSpace(envelope.SessionID) != "" &&

@@ -17,11 +17,13 @@ const (
 	maxSignalSessionParticipants   = 16
 	signalSessionIdentifierByteLen = 16
 	signalSessionTTL               = 30 * time.Minute
+	maxSignalSessionsPerOwner      = 5
 )
 
 var (
 	errInvalidSignalSession = errors.New("invalid signal session")
 	errSignalSessionDenied  = errors.New("signal session access denied")
+	errSignalSessionLimit   = errors.New("signal session limit reached")
 )
 
 // signalEnvelope is the versioned wire contract used by authorized
@@ -96,6 +98,16 @@ func (s *signalSessionStore) create(ownerID, callID string, participantIDs []str
 
 	s.mu.Lock()
 	s.pruneExpiredLocked(s.now())
+	ownersSessions := 0
+	for _, existing := range s.sessions {
+		if existing.OwnerID == ownerID {
+			ownersSessions++
+		}
+	}
+	if ownersSessions >= maxSignalSessionsPerOwner {
+		s.mu.Unlock()
+		return signalSession{}, errSignalSessionLimit
+	}
 	s.sessions[id] = session
 	s.mu.Unlock()
 	return session, nil
