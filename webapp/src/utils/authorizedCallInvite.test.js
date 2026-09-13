@@ -7,39 +7,50 @@ describe('deliverAuthorizedCallInvite', () => {
         audioOnly: true,
         createHub: jest.fn(),
         sendInvite: jest.fn(),
-        legacyHub: {broadcast: jest.fn()},
-        legacyMessage: {channel: 'call-peer-1', payload: {callerId: 'caller-1'}},
+        onHub: jest.fn(),
     });
 
-    test('delivers a private invite without publishing the legacy fallback', async () => {
+    test('registers the authorized hub before delivering a private invite', async () => {
         const input = args();
         const hub = {session: {sessionId: 'session-1'}, close: jest.fn()};
         input.createHub.mockResolvedValue(hub);
         input.sendInvite.mockResolvedValue();
 
         await expect(deliverAuthorizedCallInvite(input)).resolves.toBe(hub);
+        expect(input.onHub).toHaveBeenCalledWith(hub);
+        expect(input.onHub.mock.invocationCallOrder[0]).toBeLessThan(input.sendInvite.mock.invocationCallOrder[0]);
         expect(input.sendInvite).toHaveBeenCalledWith(hub.session, 'peer-1', {audioOnly: true});
-        expect(input.legacyHub.broadcast).not.toHaveBeenCalled();
         expect(hub.close).not.toHaveBeenCalled();
     });
 
-    test('falls back when session creation fails', async () => {
+    test('rejects without delivering an invite when session creation fails', async () => {
         const input = args();
-        input.createHub.mockRejectedValue(new Error('unavailable'));
+        const error = new Error('unavailable');
+        input.createHub.mockRejectedValue(error);
 
-        await expect(deliverAuthorizedCallInvite(input)).resolves.toBeNull();
+        await expect(deliverAuthorizedCallInvite(input)).rejects.toBe(error);
+        expect(input.onHub).not.toHaveBeenCalled();
         expect(input.sendInvite).not.toHaveBeenCalled();
-        expect(input.legacyHub.broadcast).toHaveBeenCalledWith('call-peer-1', {callerId: 'caller-1'});
     });
 
-    test('closes the authorized hub before falling back when invite delivery fails', async () => {
+    test('closes the authorized hub when invite delivery fails', async () => {
         const input = args();
         const hub = {session: {sessionId: 'session-1'}, close: jest.fn()};
         input.createHub.mockResolvedValue(hub);
         input.sendInvite.mockRejectedValue(new Error('offline'));
 
-        await expect(deliverAuthorizedCallInvite(input)).resolves.toBeNull();
+        await expect(deliverAuthorizedCallInvite(input)).rejects.toThrow('offline');
         expect(hub.close).toHaveBeenCalledTimes(1);
-        expect(input.legacyHub.broadcast).toHaveBeenCalledWith('call-peer-1', {callerId: 'caller-1'});
+    });
+
+    test('closes the authorized hub when listener registration fails', async () => {
+        const input = args();
+        const hub = {session: {sessionId: 'session-1'}, close: jest.fn()};
+        input.createHub.mockResolvedValue(hub);
+        input.onHub.mockRejectedValue(new Error('listener failed'));
+
+        await expect(deliverAuthorizedCallInvite(input)).rejects.toThrow('listener failed');
+        expect(input.sendInvite).not.toHaveBeenCalled();
+        expect(hub.close).toHaveBeenCalledTimes(1);
     });
 });

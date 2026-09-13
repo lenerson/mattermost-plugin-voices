@@ -83,4 +83,14 @@ describe('call lifecycle', () => {
         expect(state.activeSignalSessionId).toBe('session-2');
         expect(reducer(state, {type: ActionTypes.END_CALL}).activeSignalSessionId).toBeNull();
     });
+
+    test('records the authorized session after an outgoing call starts', () => {
+        const state = reduce([
+            INIT,
+            {type: ActionTypes.MAKE_VIDEO_CALL, data: {peerId: 'p2', callId: 'c2'}},
+            {type: ActionTypes.SIGNAL_SESSION_READY, data: {signalSessionId: 'session-2'}},
+        ]);
+
+        expect(state.activeSignalSessionId).toBe('session-2');
+    });
 });

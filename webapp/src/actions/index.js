@@ -170,7 +170,6 @@ function parseAuthorizedCallInvite(raw) {
 export function makeVideoCall(peerId, {audioOnly = false} = {}) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
-        const config = getConfig(getState());
         const {configLoaded, callIncoming, callOutgoing} = pluginState(getState);
 
         if (!configLoaded) {
@@ -204,8 +203,6 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
         }
 
         const callId = newCallId();
-        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${peerId}`));
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
 
         dispatch({
             type: ActionTypes.MAKE_VIDEO_CALL,
@@ -218,15 +215,6 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
 
         startOutgoingRingback();
 
-        listenAccept(user.id, peerId)(dispatch, getState);
-
-        attachOutgoingDeclineListener(accepthub, user.id, peerId, () => {
-            clearOutgoingDeclineListener();
-            stopOutgoingRingback();
-            releaseCallResources();
-            dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
-        });
-
         (async () => {
             try {
                 let channelId = getDirectChannelIdForPeer(getState(), user.id, peerId);
@@ -238,22 +226,42 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 debug('Video call invite post failed (call signalling still proceeds)', e);
             }
 
-            const authorizedHub = await deliverAuthorizedCallInvite({
-                callId,
-                peerId,
-                audioOnly,
-                createHub: async (nextCallId, participants) => trackHub(await createAuthorizedSignalHub(nextCallId, participants)),
-                sendInvite: sendAuthorizedSignalInvite,
-                legacyHub: callhub,
-                legacyMessage: {
-                    channel: `call-${peerId}`,
-                    payload: {callerId: user.id, callId, audioOnly},
-                },
-            });
-            if (authorizedHub) {
-                listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
+            try {
+                await deliverAuthorizedCallInvite({
+                    callId,
+                    peerId,
+                    audioOnly,
+                    createHub: async (nextCallId, participants) => trackHub(await createAuthorizedSignalHub(nextCallId, participants)),
+                    sendInvite: sendAuthorizedSignalInvite,
+                    onHub: (authorizedHub) => {
+                        const current = pluginState(getState);
+                        if (!current.callOutgoing || current.activeCallId !== callId) {
+                            throw new Error('Call ended before authorized signalling was ready');
+                        }
+
+                        dispatch({
+                            type: ActionTypes.SIGNAL_SESSION_READY,
+                            data: {signalSessionId: authorizedHub.session.sessionId},
+                        });
+                        listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
+                        attachOutgoingDeclineListener(authorizedHub, user.id, peerId, () => {
+                            clearOutgoingDeclineListener();
+                            stopOutgoingRingback();
+                            releaseCallResources();
+                            dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
+                        });
+                    },
+                });
+                debug(`calling ${peerId} (${callId})`);
+            } catch (error) {
+                debug('Authorized call session could not be created', error);
+                const current = pluginState(getState);
+                if (current.callOutgoing && current.activeCallId === callId) {
+                    stopOutgoingRingback();
+                    releaseCallResources();
+                    dispatch({type: ActionTypes.END_CALL});
+                }
             }
-            debug(`calling ${peerId} (${callId})`);
         })();
     };
 }

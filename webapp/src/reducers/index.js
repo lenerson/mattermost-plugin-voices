@@ -165,6 +165,8 @@ const activeCallId = (state = null, action) => {
 
 const activeSignalSessionId = (state = null, action) => {
     switch (action.type) {
+    case ActionTypes.SIGNAL_SESSION_READY:
+        return action.data && action.data.signalSessionId;
     case ActionTypes.MAKE_VIDEO_CALL:
     case ActionTypes.RECEIVE_VIDEO_CALL:
         return (action.data && action.data.signalSessionId) || null;
