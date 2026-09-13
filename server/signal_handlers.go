@@ -257,7 +257,12 @@ func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	session, err := p.getSignalSessions().create(ownerID, body.CallID, participants)
+	var session signalSession
+	if body.RoomID != "" {
+		session, err = p.getSignalSessions().forVoiceRoom(ownerID, body.RoomID, body.CallID, participants)
+	} else {
+		session, err = p.getSignalSessions().create(ownerID, body.CallID, participants)
+	}
 	if err != nil {
 		status := http.StatusInternalServerError
 		if err == errInvalidSignalSession {

@@ -51,6 +51,22 @@ func TestSignalSessionStoreLimitsSessionsPerOwner(t *testing.T) {
 	assert.ErrorIs(t, err, errSignalSessionLimit)
 }
 
+func TestSignalSessionStoreReusesVoiceRoomSession(t *testing.T) {
+	store := newSignalSessionStore()
+	first, err := store.forVoiceRoom("user-1", "room-1", "voice-call", []string{"user-1", "user-2"})
+	require.NoError(t, err)
+	second, err := store.forVoiceRoom("user-2", "room-1", "different-call", []string{"user-1", "user-2"})
+	require.NoError(t, err)
+	assert.Equal(t, first.ID, second.ID)
+
+	_, err = store.forVoiceRoom("outsider", "room-1", "voice-call", []string{"user-1", "user-2"})
+	assert.ErrorIs(t, err, errSignalSessionDenied)
+	assert.NoError(t, store.close(first.ID, "user-1"))
+	third, err := store.forVoiceRoom("user-1", "room-1", "new-call", []string{"user-1"})
+	require.NoError(t, err)
+	assert.NotEqual(t, first.ID, third.ID)
+}
+
 func TestSignalSessionStoreRejectsInvalidInputs(t *testing.T) {
 	store := newSignalSessionStore()
 

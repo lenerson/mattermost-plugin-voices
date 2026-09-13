@@ -46,16 +46,47 @@ type signalSession struct {
 	OwnerID      string
 	ExpiresAt    time.Time
 	participants map[string]struct{}
+	RoomID       string
 }
 
 type signalSessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]signalSession
+	rooms    map[string]string
 	now      func() time.Time
 }
 
 func newSignalSessionStore() *signalSessionStore {
-	return &signalSessionStore{sessions: make(map[string]signalSession), now: time.Now}
+	return &signalSessionStore{sessions: make(map[string]signalSession), rooms: make(map[string]string), now: time.Now}
+}
+
+func (s *signalSessionStore) forVoiceRoom(ownerID, roomID, callID string, participants []string) (signalSession, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pruneExpiredLocked(s.now())
+	if id := s.rooms[roomID]; id != "" {
+		session := s.sessions[id]
+		if _, allowed := session.participants[ownerID]; allowed {
+			return session, nil
+		}
+		return signalSession{}, errSignalSessionDenied
+	}
+
+	participantsMap := make(map[string]struct{}, len(participants))
+	for _, participantID := range participants {
+		participantsMap[participantID] = struct{}{}
+	}
+	if _, allowed := participantsMap[ownerID]; !allowed {
+		return signalSession{}, errSignalSessionDenied
+	}
+	id, err := newSignalSessionID()
+	if err != nil {
+		return signalSession{}, err
+	}
+	session := signalSession{ID: id, CallID: callID, OwnerID: ownerID, RoomID: roomID, participants: participantsMap, ExpiresAt: s.now().Add(signalSessionTTL)}
+	s.sessions[id] = session
+	s.rooms[roomID] = id
+	return session, nil
 }
 
 func newSignalSessionID() (string, error) {
@@ -135,6 +166,9 @@ func (s *signalSessionStore) close(sessionID, ownerID string) error {
 		return errSignalSessionDenied
 	}
 	delete(s.sessions, sessionID)
+	if session.RoomID != "" {
+		delete(s.rooms, session.RoomID)
+	}
 	return nil
 }
 
@@ -142,6 +176,9 @@ func (s *signalSessionStore) pruneExpiredLocked(now time.Time) {
 	for id, session := range s.sessions {
 		if !session.ExpiresAt.After(now) {
 			delete(s.sessions, id)
+			if session.RoomID != "" {
+				delete(s.rooms, session.RoomID)
+			}
 		}
 	}
 }
