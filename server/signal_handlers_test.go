@@ -200,6 +200,31 @@ func TestSignalSessionCloseRequiresOwner(t *testing.T) {
 	assert.ErrorIs(t, p.getSignalSessions().authorize(session.ID, "call-1", "user-1"), errSignalSessionDenied)
 }
 
+func TestSignalSessionCreateForVoiceRoomUsesActivePresence(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, heartbeat(p, "user-1", "room-1").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "user-2", "room-1").Code)
+
+	w := voiceRoomsRequest(p, http.MethodPost, "/v1/signal/sessions", "user-1", map[string]interface{}{
+		"callId": "voice-call", "roomId": "room-1", "participants": []string{"attacker"},
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+	var response struct {
+		SessionID string `json:"sessionId"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+	assert.NoError(t, p.getSignalSessions().authorize(response.SessionID, "voice-call", "user-2"))
+	assert.ErrorIs(t, p.getSignalSessions().authorize(response.SessionID, "voice-call", "attacker"), errSignalSessionDenied)
+}
+
+func TestSignalSessionCreateForVoiceRoomRejectsAbsentUser(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, heartbeat(p, "present", "room-1").Code)
+
+	w := voiceRoomsRequest(p, http.MethodPost, "/v1/signal/sessions", "outsider", map[string]string{"callId": "voice-call", "roomId": "room-1"})
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
 func TestSignalInviteDeliversOnlyToAuthorizedTargetInbox(t *testing.T) {
 	p := &Plugin{}
 	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})

@@ -79,6 +79,22 @@ func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
 	return presence, raw, nil
 }
 
+func (p *Plugin) activeVoiceRoomParticipants(roomID string) ([]string, error) {
+	presence, _, err := p.readVoicePresence()
+	if err != nil {
+		return nil, err
+	}
+	users := presence[roomID]
+	now := model.GetMillis()
+	participants := make([]string, 0, len(users))
+	for userID, entry := range users {
+		if entry.ExpiresAt > now {
+			participants = append(participants, userID)
+		}
+	}
+	return participants, nil
+}
+
 // prune drops expired heartbeats and rooms left empty by them, and reports
 // whether anything changed so callers can skip a pointless write.
 func prunePresence(presence voicePresence, now int64) bool {

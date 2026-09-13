@@ -228,13 +228,36 @@ func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Reques
 	var body struct {
 		CallID       string   `json:"callId"`
 		Participants []string `json:"participants"`
+		RoomID       string   `json:"roomId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	session, err := p.getSignalSessions().create(r.Header.Get("Mattermost-User-Id"), body.CallID, body.Participants)
+	ownerID := r.Header.Get("Mattermost-User-Id")
+	participants := body.Participants
+	var err error
+	if body.RoomID != "" {
+		participants, err = p.activeVoiceRoomParticipants(body.RoomID)
+		if err != nil {
+			http.Error(w, "could not read voice presence", http.StatusInternalServerError)
+			return
+		}
+		found := false
+		for _, participantID := range participants {
+			if participantID == ownerID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "voice room access denied", http.StatusForbidden)
+			return
+		}
+	}
+
+	session, err := p.getSignalSessions().create(ownerID, body.CallID, participants)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if err == errInvalidSignalSession {
