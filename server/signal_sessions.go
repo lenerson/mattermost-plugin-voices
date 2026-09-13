@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -15,6 +16,7 @@ const (
 	maxSignalMessageTypeLen        = 64
 	maxSignalSessionParticipants   = 16
 	signalSessionIdentifierByteLen = 16
+	signalSessionTTL               = 30 * time.Minute
 )
 
 var (
@@ -40,16 +42,18 @@ type signalSession struct {
 	ID           string
 	CallID       string
 	OwnerID      string
+	ExpiresAt    time.Time
 	participants map[string]struct{}
 }
 
 type signalSessionStore struct {
 	mu       sync.RWMutex
 	sessions map[string]signalSession
+	now      func() time.Time
 }
 
 func newSignalSessionStore() *signalSessionStore {
-	return &signalSessionStore{sessions: make(map[string]signalSession)}
+	return &signalSessionStore{sessions: make(map[string]signalSession), now: time.Now}
 }
 
 func newSignalSessionID() (string, error) {
@@ -87,18 +91,21 @@ func (s *signalSessionStore) create(ownerID, callID string, participantIDs []str
 		CallID:       callID,
 		OwnerID:      ownerID,
 		participants: participants,
+		ExpiresAt:    s.now().Add(signalSessionTTL),
 	}
 
 	s.mu.Lock()
+	s.pruneExpiredLocked(s.now())
 	s.sessions[id] = session
 	s.mu.Unlock()
 	return session, nil
 }
 
 func (s *signalSessionStore) authorize(sessionID, callID, userID string) error {
-	s.mu.RLock()
+	s.mu.Lock()
+	s.pruneExpiredLocked(s.now())
 	session, found := s.sessions[sessionID]
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	if !found || (callID != "" && session.CallID != callID) {
 		return errSignalSessionDenied
 	}
@@ -106,6 +113,25 @@ func (s *signalSessionStore) authorize(sessionID, callID, userID string) error {
 		return errSignalSessionDenied
 	}
 	return nil
+}
+
+func (s *signalSessionStore) close(sessionID, ownerID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session, found := s.sessions[sessionID]
+	if !found || session.OwnerID != ownerID {
+		return errSignalSessionDenied
+	}
+	delete(s.sessions, sessionID)
+	return nil
+}
+
+func (s *signalSessionStore) pruneExpiredLocked(now time.Time) {
+	for id, session := range s.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(s.sessions, id)
+		}
+	}
 }
 
 func signalSessionTopic(sessionID string) string {
