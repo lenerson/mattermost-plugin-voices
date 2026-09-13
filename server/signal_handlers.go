@@ -32,6 +32,10 @@ func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
 		return
 	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
 	var body struct {
@@ -98,6 +102,12 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
 		return
 	}
+	userID := r.Header.Get("Mattermost-User-Id")
+	if !p.getSignalLimits().acquireSubscription(userID) {
+		http.Error(w, "signal subscription limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	defer p.getSignalLimits().releaseSubscription(userID)
 	topic := r.URL.Query().Get("topic")
 	sessionID := r.URL.Query().Get("sessionId")
 	if r.URL.Query().Get("inbox") == "true" {
@@ -169,6 +179,10 @@ func (p *Plugin) handleSignalInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
 		return
 	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 
 	var body struct {
 		SessionID string          `json:"sessionId"`
@@ -203,6 +217,10 @@ func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Reques
 	}
 	if !p.isUserAuthenticated(r) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 

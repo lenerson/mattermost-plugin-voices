@@ -42,6 +42,16 @@ func TestSignalPublishRequiresAuth(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
 }
 
+func TestSignalPublishRejectsRateLimitedUser(t *testing.T) {
+	p := &Plugin{}
+	for i := 0; i < maxSignalRequestsPerMinute; i++ {
+		require.True(t, p.getSignalLimits().allowRequest("user-1"))
+	}
+	w := httptest.NewRecorder()
+	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish", strings.NewReader(`{"topic":"t","payload":{}}`)))
+	assert.Equal(t, http.StatusTooManyRequests, w.Result().StatusCode)
+}
+
 func TestSignalPublishRejectsMalformedJSON(t *testing.T) {
 	p := &Plugin{}
 	w := httptest.NewRecorder()

@@ -26,6 +26,13 @@ type Plugin struct {
 
 	signalSessionsOnce sync.Once
 	signalSessions     *signalSessionStore
+	signalLimitsOnce   sync.Once
+	signalLimits       *signalLimiter
+}
+
+func (p *Plugin) getSignalLimits() *signalLimiter {
+	p.signalLimitsOnce.Do(func() { p.signalLimits = newSignalLimiter() })
+	return p.signalLimits
 }
 
 func (p *Plugin) getSignal() *signalBroker {
