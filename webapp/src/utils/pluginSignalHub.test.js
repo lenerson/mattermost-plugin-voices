@@ -108,6 +108,18 @@ describe('authorized signal hub', () => {
         );
     });
 
+    test('requests a voice session using the room id', async () => {
+        axios.post.mockResolvedValue({data: {version: 1, sessionId: 'session-1', callId: 'voice-1'}});
+
+        await createAuthorizedSignalHub('voice-1', [], 'room-1');
+
+        expect(axios.post).toHaveBeenCalledWith(
+            expect.stringContaining('/v1/signal/sessions'),
+            {callId: 'voice-1', participants: [], roomId: 'room-1'},
+            expect.objectContaining({withCredentials: true}),
+        );
+    });
+
     test('subscribes to the authenticated private inbox without a user topic', () => {
         const stream = authorizedSignalInbox();
 

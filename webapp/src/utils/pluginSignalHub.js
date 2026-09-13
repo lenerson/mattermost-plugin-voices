@@ -161,11 +161,15 @@ export default function pluginSignalHub(appName) {
  * surface matches pluginSignalHub so webrtc-swarm can migrate without knowing
  * whether the transport uses a legacy topic or an authorized session.
  */
-export async function createAuthorizedSignalHub(callId, participants) {
-    const response = await axios.post(`/plugins/${pluginId}/v1/signal/sessions`, {
+export async function createAuthorizedSignalHub(callId, participants, roomId = '') {
+    const request = {
         callId,
         participants,
-    }, {
+    };
+    if (roomId) {
+        request.roomId = roomId;
+    }
+    const response = await axios.post(`/plugins/${pluginId}/v1/signal/sessions`, request, {
         headers: pluginCookieAuthHeaders(),
         withCredentials: true,
     });

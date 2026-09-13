@@ -8,7 +8,7 @@ import PropTypes from 'prop-types';
 import swarm from 'webrtc-swarm';
 
 import {VOICE_INVITE_ACCEPTED, VOICE_INVITE_DECLINED} from '../../../constants/voiceInvite';
-import pluginSignalHub from '../../../utils/pluginSignalHub';
+import pluginSignalHub, {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
@@ -964,7 +964,7 @@ export class AudioCallPanel extends React.Component {
         });
     }
 
-    connectToSwarm(userId) {
+    async connectToSwarm(userId) {
         const {activeRoom} = this.state;
         const {
             stunServer,
@@ -992,7 +992,13 @@ export class AudioCallPanel extends React.Component {
         debug('Voice hub', voiceHubName);
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        const hub = pluginSignalHub(voiceHubName);
+        let hub;
+        try {
+            hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
+        } catch (err) {
+            debug('Authorized voice session failed; using legacy signal', err);
+            hub = pluginSignalHub(voiceHubName);
+        }
         hub.subscribe('all').on('data', this.handleHubData.bind(this));
 
         const sw = swarm(
