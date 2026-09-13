@@ -51,6 +51,26 @@ describe('incomingCancelListen', () => {
         expect(onCancel).not.toHaveBeenCalled();
     });
 
+    test('prefers the authenticated sender over a spoofed callerId', () => {
+        const hub = fakeHub();
+        const onCancel = jest.fn();
+
+        attachIncomingCancelListener(hub, 'callee-id', 'caller-id', 'c1', onCancel);
+        hub.stream.handler({fromUserId: 'attacker-id', callerId: 'caller-id', callId: 'c1'});
+
+        expect(onCancel).not.toHaveBeenCalled();
+    });
+
+    test('accepts the authenticated caller even when callerId is spoofed', () => {
+        const hub = fakeHub();
+        const onCancel = jest.fn();
+
+        attachIncomingCancelListener(hub, 'callee-id', 'caller-id', 'c1', onCancel);
+        hub.stream.handler({fromUserId: 'caller-id', callerId: 'attacker-id', callId: 'c1'});
+
+        expect(onCancel).toHaveBeenCalledTimes(1);
+    });
+
     test('ignores a stale cancel from another call', () => {
         const hub = fakeHub();
         const onCancel = jest.fn();

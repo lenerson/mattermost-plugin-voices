@@ -81,6 +81,18 @@ describe('authorized signal hub', () => {
         });
     });
 
+    test('rejects an invalid envelope received on an authorized session', async () => {
+        const hub = authorizedSignalHub({version: 1, sessionId: 'session-1', callId: 'call-1'});
+        const stream = hub.subscribe();
+        const failed = jest.fn();
+        stream.on('error', failed);
+
+        eventSource.onmessage({data: JSON.stringify({version: 1, senderId: 'user-1'})});
+        await new Promise(setImmediate);
+
+        expect(failed).toHaveBeenCalled();
+    });
+
     test('creates a server-owned session before returning a hub', async () => {
         axios.post.mockResolvedValue({
             data: {version: 1, sessionId: 'session-1', callId: 'call-1'},

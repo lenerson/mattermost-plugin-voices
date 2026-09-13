@@ -16,7 +16,8 @@ export function attachOutgoingDeclineListener(hub, callerId, calleeId, onDecline
                 return;
             }
         }
-        if (data && data.calleeId === calleeId) {
+        const senderId = data && (data.fromUserId || data.calleeId);
+        if (data && senderId === calleeId) {
             onDecline();
         }
     };

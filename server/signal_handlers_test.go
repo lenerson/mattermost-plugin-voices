@@ -143,6 +143,17 @@ func TestSignalPublishAuthorizedEnvelopeRejectsOutsider(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
 }
 
+func TestSignalPublishAuthorizedEnvelopeRejectsAnotherSessionCallID(t *testing.T) {
+	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
+
+	w := httptest.NewRecorder()
+	body := fmt.Sprintf(`{"version":1,"sessionId":%q,"callId":"other-call","type":"webrtc","payload":{}}`, session.ID)
+	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish", strings.NewReader(body)))
+	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
+}
+
 func TestSignalSessionCreateReturnsSessionForAuthenticatedCaller(t *testing.T) {
 	p := &Plugin{}
 	w := httptest.NewRecorder()
