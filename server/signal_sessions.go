@@ -66,16 +66,15 @@ func (s *signalSessionStore) forVoiceRoom(ownerID, roomID, callID string, partic
 	s.pruneExpiredLocked(s.now())
 	if id := s.rooms[roomID]; id != "" {
 		session := s.sessions[id]
+		session.participants = signalParticipants(participants)
+		s.sessions[id] = session
 		if _, allowed := session.participants[ownerID]; allowed {
 			return session, nil
 		}
 		return signalSession{}, errSignalSessionDenied
 	}
 
-	participantsMap := make(map[string]struct{}, len(participants))
-	for _, participantID := range participants {
-		participantsMap[participantID] = struct{}{}
-	}
+	participantsMap := signalParticipants(participants)
 	if _, allowed := participantsMap[ownerID]; !allowed {
 		return signalSession{}, errSignalSessionDenied
 	}
@@ -87,6 +86,35 @@ func (s *signalSessionStore) forVoiceRoom(ownerID, roomID, callID string, partic
 	s.sessions[id] = session
 	s.rooms[roomID] = id
 	return session, nil
+}
+
+func (s *signalSessionStore) syncVoiceRoomParticipants(roomID string, participants []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id := s.rooms[roomID]
+	if id == "" {
+		return
+	}
+	session, found := s.sessions[id]
+	if !found {
+		delete(s.rooms, roomID)
+		return
+	}
+	if len(participants) == 0 {
+		delete(s.sessions, id)
+		delete(s.rooms, roomID)
+		return
+	}
+	session.participants = signalParticipants(participants)
+	s.sessions[id] = session
+}
+
+func signalParticipants(participants []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(participants))
+	for _, participantID := range participants {
+		result[participantID] = struct{}{}
+	}
+	return result
 }
 
 func newSignalSessionID() (string, error) {

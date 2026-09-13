@@ -265,5 +265,18 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 		}, &model.WebsocketBroadcast{})
 	}
 
+	if previousRoomID != "" {
+		participants, participantsErr := p.activeVoiceRoomParticipants(previousRoomID)
+		if participantsErr == nil {
+			p.getSignalSessions().syncVoiceRoomParticipants(previousRoomID, participants)
+		}
+	}
+	if roomID != "" {
+		participants, participantsErr := p.activeVoiceRoomParticipants(roomID)
+		if participantsErr == nil {
+			p.getSignalSessions().syncVoiceRoomParticipants(roomID, participants)
+		}
+	}
+
 	p.handleVoiceRoomsList(w)
 }

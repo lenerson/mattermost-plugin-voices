@@ -67,6 +67,21 @@ func TestSignalSessionStoreReusesVoiceRoomSession(t *testing.T) {
 	assert.NotEqual(t, first.ID, third.ID)
 }
 
+func TestSignalSessionStoreSynchronizesVoiceRoomParticipants(t *testing.T) {
+	store := newSignalSessionStore()
+	session, err := store.forVoiceRoom("user-1", "room-1", "voice-call", []string{"user-1"})
+	require.NoError(t, err)
+	store.syncVoiceRoomParticipants("room-1", []string{"user-1", "user-2"})
+	assert.NoError(t, store.authorize(session.ID, "voice-call", "user-2"))
+
+	store.syncVoiceRoomParticipants("room-1", []string{"user-2"})
+	assert.ErrorIs(t, store.authorize(session.ID, "voice-call", "user-1"), errSignalSessionDenied)
+	assert.NoError(t, store.authorize(session.ID, "voice-call", "user-2"))
+
+	store.syncVoiceRoomParticipants("room-1", nil)
+	assert.ErrorIs(t, store.authorize(session.ID, "voice-call", "user-2"), errSignalSessionDenied)
+}
+
 func TestSignalSessionStoreRejectsInvalidInputs(t *testing.T) {
 	store := newSignalSessionStore()
 
