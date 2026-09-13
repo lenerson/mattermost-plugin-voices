@@ -22,6 +22,7 @@ import {notifyIncomingCall} from '../utils/callBrowserNotify';
 import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../utils/outgoingDeclineListen';
 import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
 import {watchPeerConnection} from '../utils/peerConnectionWatch';
+import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
 
 let gStream;
 let cPeer;
@@ -237,17 +238,22 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 debug('Video call invite post failed (call signalling still proceeds)', e);
             }
 
-            try {
-                const authorizedHub = trackHub(await createAuthorizedSignalHub(callId, [peerId]));
-                await sendAuthorizedSignalInvite(authorizedHub.session, peerId, {audioOnly});
+            const authorizedHub = await deliverAuthorizedCallInvite({
+                callId,
+                peerId,
+                audioOnly,
+                createHub: async (nextCallId, participants) => trackHub(await createAuthorizedSignalHub(nextCallId, participants)),
+                sendInvite: sendAuthorizedSignalInvite,
+                legacyHub: callhub,
+                legacyMessage: {
+                    channel: `call-${peerId}`,
+                    payload: {callerId: user.id, callId, audioOnly},
+                },
+            });
+            if (authorizedHub) {
                 listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
-            } catch (e) {
-                // Keep the established topic as a compatibility fallback until
-                // accept, decline, and WebRTC negotiation use the session too.
-                debug('Authorized call invite failed; using legacy signal', e);
             }
             debug(`calling ${peerId} (${callId})`);
-            callhub.broadcast(`call-${peerId}`, {callerId: user.id, callId, audioOnly});
         })();
     };
 }
@@ -291,7 +297,7 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false, signa
         });
 
         const config = getConfig(getState());
-        const cancelhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+        const cancelhub = signalSessionId ? trackHub(authorizedSignalHub({version: 1, sessionId: signalSessionId, callId})) : trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
         attachIncomingCancelListener(cancelhub, user.id, peerId, callId, () => {
             debug(`call from ${peerId} was cancelled`);
             endCall()(dispatch, getState);
@@ -640,8 +646,8 @@ export function rejectCall() {
 
         if (state.callIncoming && state.callPeerId && user && user.id) {
             const config = getConfig(getState());
-            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-            hub.broadcast(`decline-${state.callPeerId}`, {
+            const hub = state.activeSignalSessionId ? trackHub(authorizedSignalHub({version: 1, sessionId: state.activeSignalSessionId, callId: state.activeCallId})) : trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+            hub.broadcast(`decline-${state.callPeerId}`, state.activeSignalSessionId ? {fromUserId: user.id} : {
                 calleeId: user.id,
                 callId: state.activeCallId,
             });
@@ -682,8 +688,8 @@ export function endCall() {
          */
         if (state.callOutgoing && !state.peerAccepted && state.callPeerId && user && user.id) {
             const config = getConfig(getState());
-            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-            hub.broadcast(`cancel-${state.callPeerId}`, {
+            const hub = state.activeSignalSessionId ? trackHub(authorizedSignalHub({version: 1, sessionId: state.activeSignalSessionId, callId: state.activeCallId})) : trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+            hub.broadcast(`cancel-${state.callPeerId}`, state.activeSignalSessionId ? {fromUserId: user.id, callId: state.activeCallId} : {
                 callerId: user.id,
                 callId: state.activeCallId,
             });
