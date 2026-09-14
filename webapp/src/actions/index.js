@@ -204,7 +204,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                             type: ActionTypes.SIGNAL_SESSION_READY,
                             data: {signalSessionId: authorizedHub.session.sessionId},
                         });
-                        listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
+                        listenAccept(user.id, peerId, authorizedHub, callId)(dispatch, getState);
                         attachOutgoingDeclineListener(authorizedHub, user.id, peerId, () => {
                             clearOutgoingDeclineListener();
                             stopOutgoingRingback();
@@ -323,7 +323,7 @@ export function listenVideoCall() {
     };
 }
 
-function listenAccept(userId, peerId, authorizedHub) {
+function listenAccept(userId, peerId, authorizedHub, callId) {
     return (dispatch, getState) => {
         const user = getUser(getState(), userId);
         const {configLoaded, callPeerId} = pluginState(getState);
@@ -348,6 +348,11 @@ function listenAccept(userId, peerId, authorizedHub) {
                 return;
             }
 
+            if (!callSession.beginConnecting(callId)) {
+                debug('Ignoring accepted call for an inactive CallSession.');
+                return;
+            }
+
             const {stunServer: stun2, turnServer: turn2, turnServerUsername: tu2, turnServerCredential: tc2} = pluginState(getState);
 
             const iceServers = buildIceServers(stun2, turn2, tu2, tc2);
@@ -367,6 +372,10 @@ function listenAccept(userId, peerId, authorizedHub) {
             ), 'caller', iceServers);
 
             sw.on('peer', (peer, id) => {
+                if (!callSession.markConnected(callId)) {
+                    debug('Ignoring stale peer for an inactive CallSession.');
+                    return;
+                }
                 debug('peer connected', id);
 
                 peer.on('data', (payload) => {
@@ -486,6 +495,12 @@ export function acceptCall() {
             return;
         }
 
+        if (!callSession.beginConnecting(activeCallId)) {
+            debug('Cannot accept an inactive CallSession.');
+            dispatch({type: ActionTypes.END_CALL});
+            return;
+        }
+
         const authorizedHub = trackHub(authorizedSignalHub({version: 1, sessionId: activeSignalSessionId, callId: activeCallId}));
         const accepthub = authorizedHub;
         accepthub.subscribe('all').on('data', () => {
@@ -512,6 +527,10 @@ export function acceptCall() {
         ), 'callee', iceServers);
 
         sw.on('peer', (peer, id) => {
+            if (!callSession.markConnected(activeCallId)) {
+                debug('Ignoring stale peer for an inactive CallSession.');
+                return;
+            }
             debug('Peer', typeof peer.hasOwnProperty, id);
 
             peer.on('data', (payload) => {
