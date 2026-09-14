@@ -366,7 +366,7 @@ describe('AudioCallPanel authorized voice signaling', () => {
         await panel.connectToSwarm();
 
         expect(swarm).not.toHaveBeenCalled();
-        expect(panel.swarmInstance).toBeUndefined();
+        expect(panel.swarmInstance).toBeNull();
         expect(panel.connectPending).toBe(false);
     });
 
@@ -458,11 +458,10 @@ describe('AudioCallPanel connection reconciliation', () => {
         const pendingMedia = new Promise((resolve) => {
             resolveMedia = resolve;
         });
-        const originalMediaDevices = navigator.mediaDevices;
-        Object.defineProperty(navigator, 'mediaDevices', {
-            configurable: true,
-            value: {getUserMedia: jest.fn(() => pendingMedia)},
-        });
+        const originalNavigator = global.navigator;
+        global.navigator = {
+            mediaDevices: {getUserMedia: jest.fn(() => pendingMedia)},
+        };
         const track = {stop: jest.fn()};
         const stream = {getTracks: () => [track]};
         const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
@@ -470,17 +469,20 @@ describe('AudioCallPanel connection reconciliation', () => {
         applyStateSynchronously(panel);
         panel.announcePresence = jest.fn();
 
-        const requesting = panel.handleRequestPerms();
-        panel.state.activeRoom = null;
-        resolveMedia(stream);
-        await requesting;
+        try {
+            const requesting = panel.handleRequestPerms();
+            panel.state.activeRoom = null;
+            resolveMedia(stream);
+            await requesting;
 
-        expect(track.stop).toHaveBeenCalledTimes(1);
-        expect(panel.currentMyStream).toBeNull();
-        expect(panel.state.initialized).toBe(false);
-        expect(panel.announcePresence).not.toHaveBeenCalled();
-        expect(panel.mediaRequestPending).toBe(false);
-        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: originalMediaDevices});
+            expect(track.stop).toHaveBeenCalledTimes(1);
+            expect(panel.currentMyStream).toBeNull();
+            expect(panel.state.initialized).toBe(false);
+            expect(panel.announcePresence).not.toHaveBeenCalled();
+            expect(panel.mediaRequestPending).toBe(false);
+        } finally {
+            global.navigator = originalNavigator;
+        }
     });
 });
 
