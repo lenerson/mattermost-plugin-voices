@@ -388,6 +388,59 @@ describe('AudioCallPanel authorized voice signaling', () => {
     });
 });
 
+describe('AudioCallPanel connection reconciliation', () => {
+    test('keeps render free of media and signaling side effects', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state = {
+            ...panel.state,
+            activeRoom: {roomId: 'room-1', name: 'Standup'},
+            audioOn: true,
+            initialized: true,
+        };
+        panel.handleRequestPerms = jest.fn();
+        panel.connectToSwarm = jest.fn();
+
+        panel.render();
+        panel.render();
+
+        expect(panel.handleRequestPerms).not.toHaveBeenCalled();
+        expect(panel.connectToSwarm).not.toHaveBeenCalled();
+    });
+
+    test('starts media acquisition once when an active room needs permissions', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true, initialized: false};
+        panel.handleRequestPerms = jest.fn(() => {
+            panel.state.initialized = true;
+        });
+        panel.connectToSwarm = jest.fn();
+
+        panel.componentDidUpdate();
+        panel.componentDidUpdate();
+
+        expect(panel.handleRequestPerms).toHaveBeenCalledTimes(1);
+        expect(panel.connectToSwarm).toHaveBeenCalledWith('user-1');
+    });
+
+    test('does not reconnect while a connection is pending or already active', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, initialized: true};
+        panel.connectToSwarm = jest.fn();
+        panel.connectPending = true;
+
+        panel.componentDidUpdate();
+        panel.connectPending = false;
+        panel.swarmInstance = {};
+        panel.componentDidUpdate();
+
+        expect(panel.connectToSwarm).not.toHaveBeenCalled();
+    });
+});
+
 describe('AudioCallPanel voice invitations', () => {
     beforeEach(() => {
         sendVoiceRoomInvite.mockReset();

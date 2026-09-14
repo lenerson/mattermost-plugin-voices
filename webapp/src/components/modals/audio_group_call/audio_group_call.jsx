@@ -166,6 +166,21 @@ export class AudioCallPanel extends React.Component {
 
     componentDidUpdate() {
         this.syncInvitePickerOutsideListener();
+        this.reconcileVoiceConnection();
+    }
+
+    reconcileVoiceConnection() {
+        const {activeRoom, audioOn, initialized, swarmInitialized} = this.state;
+        const {userId} = this.props;
+
+        if (activeRoom && audioOn && !initialized) {
+            this.handleRequestPerms();
+            return;
+        }
+
+        if (activeRoom && initialized && !swarmInitialized && !this.connectPending && !this.swarmInstance) {
+            this.connectToSwarm(userId);
+        }
     }
 
     componentWillUnmount() {
@@ -1461,7 +1476,6 @@ export class AudioCallPanel extends React.Component {
 
     render() {
         const {
-            userId,
             initialized,
             swarmInitialized,
             audioOn,
@@ -1488,14 +1502,6 @@ export class AudioCallPanel extends React.Component {
         let connectionHint = '';
         if (!swarmInitialized) {
             connectionHint = initialized && !audioEnabled ? 'No microphone available — you can listen, but not speak.' : 'Connecting…';
-        }
-
-        if (activeRoom && audioOn && !initialized) {
-            this.handleRequestPerms();
-        }
-
-        if (activeRoom && initialized && !swarmInitialized && !this.connectPending && !this.swarmInstance) {
-            this.connectToSwarm(userId);
         }
 
         return (
