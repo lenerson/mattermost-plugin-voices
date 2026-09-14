@@ -35,15 +35,22 @@ describe('CallSession', () => {
             throw new Error('swarm close failed');
         })};
         const hub = {close: jest.fn()};
+        const track = {stop: jest.fn()};
+        const stream = {getTracks: () => [track]};
         session.start('call-1', 'peer-1');
         session.trackHub(hub);
         session.trackSwarm(swarm, cancel);
+        session.setStream(stream);
+        session.setPeer({send: jest.fn()});
 
         expect(session.end('call-1')).toBe(true);
         expect(cancel).toHaveBeenCalledTimes(1);
         expect(swarm.close).toHaveBeenCalledTimes(1);
         expect(hub.close).toHaveBeenCalledTimes(1);
+        expect(track.stop).toHaveBeenCalledTimes(1);
         expect(session.state).toBe(CallSessionState.IDLE);
+        expect(session.stream).toBeNull();
+        expect(session.peer).toBeNull();
     });
 
     test('does not transition directly from ringing to connected', () => {

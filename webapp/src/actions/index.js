@@ -24,9 +24,6 @@ import {watchPeerConnection} from '../utils/peerConnectionWatch';
 import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
 import CallSession from '../utils/callSession';
 
-let gStream;
-let cPeer;
-
 /**
  * The plugin reducer is registered by initialize(), but never assume the slice
  * is there: reading through it must not throw during webapp boot.
@@ -380,7 +377,7 @@ function listenAccept(userId, peerId, authorizedHub, callId) {
                 debug('peer connected', id);
 
                 peer.on('data', (payload) => {
-                    cPeer = peer;
+                    callSession.setPeer(peer);
 
                     const data = JSON.parse(payload.toString());
                     debug('received peer data', {id, type: data.type});
@@ -452,7 +449,7 @@ function listenAccept(userId, peerId, authorizedHub, callId) {
 
             sw.on('disconnect', (_peer, id) => {
                 debug('disconnected from a peer:', id);
-                cPeer = null;
+                callSession.setPeer(null);
                 dispatch({
                     type: ActionTypes.PEER_LOST,
                 });
@@ -535,7 +532,7 @@ export function acceptCall() {
             debug('Peer', typeof peer.hasOwnProperty, id);
 
             peer.on('data', (payload) => {
-                cPeer = peer;
+                callSession.setPeer(peer);
 
                 const data = JSON.parse(payload.toString());
 
@@ -608,7 +605,7 @@ export function acceptCall() {
 
         sw.on('disconnect', (_peer, id) => {
             debug('disconnected from a peer:', id);
-            cPeer = null;
+            callSession.setPeer(null);
             dispatch({
                 type: ActionTypes.PEER_LOST,
             });
@@ -682,12 +679,6 @@ export function endCall() {
             }
         }
 
-        if (gStream) {
-            gStream.getTracks().forEach((track) => track.stop());
-            gStream = null;
-        }
-
-        cPeer = null;
         stopIncomingRing();
         stopOutgoingRingback();
         clearOutgoingDeclineListener();
@@ -774,7 +765,7 @@ function captureAndShareMedia(peer, dispatch, getState) {
             return;
         }
 
-        gStream = stream;
+        callSession.setStream(stream);
         peer.addStream(stream);
 
         dispatch({type: ActionTypes.SELF_STREAM_SET, data: stream});
@@ -809,19 +800,19 @@ export function audioToggle() {
     return (dispatch, getState) => {
         const {audioOn} = pluginState(getState);
 
-        if (!cPeer) {
+        const peer = callSession.peer;
+        const stream = callSession.stream;
+        if (!peer) {
             return;
         }
-        if (gStream) {
-            const t = gStream.getAudioTracks()[0];
+        if (stream) {
+            const t = stream.getAudioTracks()[0];
             if (t) {
                 t.enabled = !audioOn;
             }
         }
 
-        if (cPeer) {
-            cPeer.send(JSON.stringify({type: 'audioToggle', enabled: !audioOn}));
-        }
+        peer.send(JSON.stringify({type: 'audioToggle', enabled: !audioOn}));
         dispatch({type: ActionTypes.AUDIO_TOGGLE,
             data: !audioOn});
     };
@@ -831,12 +822,15 @@ export function videoToggle() {
     return (dispatch, getState) => {
         const {videoOn} = pluginState(getState);
 
-        if (!cPeer) {
+        const peer = callSession.peer;
+        const stream = callSession.stream;
+        const callId = pluginState(getState).activeCallId;
+        if (!peer || !callId) {
             return;
         }
 
         const turningOn = !videoOn;
-        const track = gStream && gStream.getVideoTracks()[0];
+        const track = stream && stream.getVideoTracks()[0];
 
         /*
          * A call placed with the phone button never opened the camera, so
@@ -846,29 +840,29 @@ export function videoToggle() {
         if (turningOn && !track) {
             navigator.mediaDevices.getUserMedia({video: true}).then((videoStream) => {
                 const acquired = videoStream.getVideoTracks()[0];
-                if (!acquired || !cPeer) {
+                if (!acquired || callSession.callId !== callId || callSession.peer !== peer) {
                     return;
                 }
 
-                if (gStream) {
+                if (callSession.stream) {
                     /*
                      * Add to the stream the peer already holds rather than
                      * sending a second one: a fresh stream would replace the
                      * far side's reference and take the audio away with it.
                      */
-                    gStream.addTrack(acquired);
-                    cPeer.addTrack(acquired, gStream);
+                    callSession.stream.addTrack(acquired);
+                    peer.addTrack(acquired, callSession.stream);
                 } else {
-                    gStream = videoStream;
-                    cPeer.addStream(videoStream);
+                    callSession.setStream(videoStream);
+                    peer.addStream(videoStream);
                 }
 
                 // New object for the same tracks, so the preview re-attaches.
                 dispatch({
                     type: ActionTypes.SELF_STREAM_SET,
-                    data: new MediaStream(gStream.getTracks()),
+                    data: new MediaStream(callSession.stream.getTracks()),
                 });
-                cPeer.send(JSON.stringify({type: 'videoToggle', enabled: true}));
+                peer.send(JSON.stringify({type: 'videoToggle', enabled: true}));
                 dispatch({type: ActionTypes.VIDEO_TOGGLE, data: true});
             }).catch((e) => {
                 debug('Could not open the camera mid-call', e);
@@ -883,7 +877,7 @@ export function videoToggle() {
         if (track) {
             track.enabled = turningOn;
         }
-        cPeer.send(JSON.stringify({type: 'videoToggle', enabled: turningOn}));
+        peer.send(JSON.stringify({type: 'videoToggle', enabled: turningOn}));
         dispatch({type: ActionTypes.VIDEO_TOGGLE, data: turningOn});
     };
 }

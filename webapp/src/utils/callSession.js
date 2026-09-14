@@ -15,6 +15,8 @@ export default class CallSession {
         this.hubs = [];
         this.swarms = [];
         this.watches = [];
+        this.stream = null;
+        this.peer = null;
     }
 
     start(callId, peerId) {
@@ -67,6 +69,16 @@ export default class CallSession {
         return swarm;
     }
 
+    setStream(stream) {
+        this.stream = stream || null;
+        return this.stream;
+    }
+
+    setPeer(peer) {
+        this.peer = peer || null;
+        return this.peer;
+    }
+
     end(callId = this.callId) {
         if (callId !== this.callId || this.state === CallSessionState.IDLE || this.state === CallSessionState.ENDING) {
             return false;
@@ -80,6 +92,15 @@ export default class CallSession {
     }
 
     releaseResources() {
+        if (this.stream) {
+            try {
+                this.stream.getTracks().forEach((track) => track.stop());
+            } catch (error) {
+                // Cleanup is best effort; a failed track must not retain the call.
+            }
+            this.stream = null;
+        }
+        this.peer = null;
         this.watches.splice(0).forEach((cancel) => {
             try {
                 cancel();
