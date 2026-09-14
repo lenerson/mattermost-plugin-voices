@@ -976,6 +976,54 @@ describe('AudioCallPanel leaving a room', () => {
         expect(done).toHaveBeenCalledTimes(1);
     });
 
+    test('queues concurrent cleanup callbacks until one swarm close completes', () => {
+        const cleanup = {};
+        const firstDone = jest.fn();
+        const secondDone = jest.fn();
+        const panel = {
+            cleanupInProgress: false,
+            cleanupCallbacks: [],
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(captureCleanupCallback(cleanup))},
+        };
+
+        AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
+        AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
+
+        expect(panel.swarmInstance).toBeNull();
+        expect(firstDone).not.toHaveBeenCalled();
+        expect(secondDone).not.toHaveBeenCalled();
+        expect(cleanup.finish).toBeDefined();
+
+        cleanup.finish();
+
+        expect(firstDone).toHaveBeenCalledTimes(1);
+        expect(secondDone).toHaveBeenCalledTimes(1);
+        expect(panel.cleanupInProgress).toBe(false);
+    });
+
+    test('continues a queued cleanup when the swarm close callback never arrives', () => {
+        jest.useFakeTimers();
+        const firstDone = jest.fn();
+        const secondDone = jest.fn();
+        const panel = {
+            cleanupInProgress: false,
+            cleanupCallbacks: [],
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(leaveClosePending)},
+        };
+
+        AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
+        AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
+        jest.advanceTimersByTime(SWARM_CLOSE_TIMEOUT_MS);
+
+        expect(firstDone).toHaveBeenCalledTimes(1);
+        expect(secondDone).toHaveBeenCalledTimes(1);
+        expect(panel.cleanupInProgress).toBe(false);
+    });
+
     test('continues cleanup when the swarm omits its close callback', () => {
         jest.useFakeTimers();
         const done = jest.fn();

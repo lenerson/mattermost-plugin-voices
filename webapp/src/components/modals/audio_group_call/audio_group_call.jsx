@@ -178,6 +178,8 @@ export class AudioCallPanel extends React.Component {
         this.presenceHeartbeat = null;
         this.currentMyStream = null;
         this.connectPending = false;
+        this.cleanupInProgress = false;
+        this.cleanupCallbacks = [];
         this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
@@ -779,6 +781,13 @@ export class AudioCallPanel extends React.Component {
         const onFinished = typeof done === 'function' ? done : function noopCallback() {
             /* optional async completion */
         };
+        if (this.cleanupInProgress) {
+            this.cleanupCallbacks.push(onFinished);
+            return;
+        }
+
+        this.cleanupInProgress = true;
+        this.cleanupCallbacks = [onFinished];
         let finished = false;
         let closeFallback = null;
         const finish = () => {
@@ -790,7 +799,16 @@ export class AudioCallPanel extends React.Component {
                 clearTimeout(closeFallback);
                 closeFallback = null;
             }
-            onFinished();
+            this.cleanupInProgress = false;
+            const callbacks = this.cleanupCallbacks;
+            this.cleanupCallbacks = [];
+            callbacks.forEach((callback) => {
+                try {
+                    callback();
+                } catch (error) {
+                    debug('voice cleanup callback failed', error);
+                }
+            });
         };
 
         Object.values(this.state.playBacks || {}).forEach((aud) => {
