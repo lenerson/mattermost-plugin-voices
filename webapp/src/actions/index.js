@@ -22,7 +22,7 @@ import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../ut
 import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
 import {watchPeerConnection} from '../utils/peerConnectionWatch';
 import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
-import CallSession from '../utils/callSession';
+import CallSession, {CallSessionState} from '../utils/callSession';
 
 /**
  * The plugin reducer is registered by initialize(), but never assume the slice
@@ -217,6 +217,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 if (current.callOutgoing && current.activeCallId === callId) {
                     stopOutgoingRingback();
                     callSession.fail(callId);
+                    dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.FAILED}});
                     releaseCallResources(callId);
                     dispatch({type: ActionTypes.END_CALL});
                 }
@@ -350,6 +351,7 @@ function listenAccept(userId, peerId, authorizedHub, callId) {
                 debug('Ignoring accepted call for an inactive CallSession.');
                 return;
             }
+            dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTING}});
 
             const {stunServer: stun2, turnServer: turn2, turnServerUsername: tu2, turnServerCredential: tc2} = pluginState(getState);
 
@@ -374,6 +376,7 @@ function listenAccept(userId, peerId, authorizedHub, callId) {
                     debug('Ignoring stale peer for an inactive CallSession.');
                     return;
                 }
+                dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTED}});
                 debug('peer connected', id);
 
                 peer.on('data', (payload) => {
@@ -498,6 +501,7 @@ export function acceptCall() {
             dispatch({type: ActionTypes.END_CALL});
             return;
         }
+        dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTING}});
 
         const authorizedHub = trackHub(authorizedSignalHub({version: 1, sessionId: activeSignalSessionId, callId: activeCallId}));
         const accepthub = authorizedHub;
@@ -529,6 +533,7 @@ export function acceptCall() {
                 debug('Ignoring stale peer for an inactive CallSession.');
                 return;
             }
+            dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTED}});
             debug('Peer', typeof peer.hasOwnProperty, id);
 
             peer.on('data', (payload) => {
