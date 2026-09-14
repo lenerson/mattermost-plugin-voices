@@ -60,59 +60,21 @@ func TestSignalPublishRejectsMalformedJSON(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 }
 
-func TestSignalPublishRejectsEmptyTopic(t *testing.T) {
+func TestSignalPublishRejectsLegacyTopic(t *testing.T) {
 	p := &Plugin{}
-	w := httptest.NewRecorder()
-	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish",
-		strings.NewReader(`{"topic":"","payload":{}}`)))
-	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
-	assert.Contains(t, w.Body.String(), "invalid topic")
-}
-
-func TestSignalPublishRejectsOversizedTopic(t *testing.T) {
-	p := &Plugin{}
-	big := strings.Repeat("a", maxSignalTopicLen+1)
-	body := fmt.Sprintf(`{"topic":%q,"payload":{}}`, big)
-	w := httptest.NewRecorder()
-	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish",
-		strings.NewReader(body)))
-	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
-}
-
-func TestSignalPublishDeliversPayloadToSubscriber(t *testing.T) {
-	p := &Plugin{}
-	ch, unsub := p.getSignal().subscribe("room-X")
-	defer unsub()
-
 	w := httptest.NewRecorder()
 	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish",
 		strings.NewReader(`{"topic":"room-X","payload":{"hello":"world"}}`)))
-	require.Equal(t, http.StatusOK, w.Result().StatusCode)
-
-	select {
-	case msg := <-ch:
-		assert.JSONEq(t, `{"hello":"world"}`, string(msg))
-	case <-time.After(time.Second):
-		t.Fatal("subscriber did not receive published payload")
-	}
+	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
+	assert.Contains(t, w.Body.String(), "invalid signal envelope")
 }
 
-func TestSignalPublishDefaultsMissingPayloadToEmptyObject(t *testing.T) {
+func TestSignalPublishRejectsMissingAuthorizedEnvelope(t *testing.T) {
 	p := &Plugin{}
-	ch, unsub := p.getSignal().subscribe("room")
-	defer unsub()
-
 	w := httptest.NewRecorder()
 	p.ServeHTTP(nil, w, authReq(http.MethodPost, "/v1/signal/publish",
-		strings.NewReader(`{"topic":"room"}`)))
-	require.Equal(t, http.StatusOK, w.Result().StatusCode)
-
-	select {
-	case msg := <-ch:
-		assert.Equal(t, "{}", string(msg))
-	case <-time.After(time.Second):
-		t.Fatal("subscriber did not receive defaulted payload")
-	}
+		strings.NewReader(`{"payload":{}}`)))
+	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 }
 
 func TestSignalPublishAuthorizedEnvelopeDerivesSenderFromRequest(t *testing.T) {
@@ -266,19 +228,18 @@ func TestSignalStreamRequiresAuth(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, w.Result().StatusCode)
 }
 
-func TestSignalStreamRequiresTopic(t *testing.T) {
+func TestSignalStreamRequiresAuthorizedSource(t *testing.T) {
 	p := &Plugin{}
 	w := httptest.NewRecorder()
 	p.ServeHTTP(nil, w, authReq(http.MethodGet, "/v1/signal/stream", nil))
 	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
-	assert.Contains(t, w.Body.String(), "invalid topic")
+	assert.Contains(t, w.Body.String(), "signal session is required")
 }
 
-func TestSignalStreamRejectsOversizedTopic(t *testing.T) {
+func TestSignalStreamRejectsLegacyTopic(t *testing.T) {
 	p := &Plugin{}
-	big := strings.Repeat("a", maxSignalTopicLen+1)
 	w := httptest.NewRecorder()
-	p.ServeHTTP(nil, w, authReq(http.MethodGet, "/v1/signal/stream?topic="+big, nil))
+	p.ServeHTTP(nil, w, authReq(http.MethodGet, "/v1/signal/stream?topic=room", nil))
 	assert.Equal(t, http.StatusBadRequest, w.Result().StatusCode)
 }
 
@@ -325,8 +286,10 @@ func TestSignalStreamHonoursContextCancellation(t *testing.T) {
 	// Goal: handler must return promptly when the client disconnects
 	// (request context is cancelled), even with no signal traffic.
 	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
-	r := authReq(http.MethodGet, "/v1/signal/stream?topic=room", nil).WithContext(ctx)
+	r := authReq(http.MethodGet, "/v1/signal/stream?sessionId="+session.ID, nil).WithContext(ctx)
 	w := newFlushRecorder()
 
 	done := make(chan struct{})
@@ -351,9 +314,11 @@ func TestSignalStreamHonoursContextCancellation(t *testing.T) {
 
 func TestSignalStreamWritesSSEFramesForPublishedPayloads(t *testing.T) {
 	p := &Plugin{}
+	session, err := p.getSignalSessions().create("user-1", "call-1", []string{"user-2"})
+	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	r := authReq(http.MethodGet, "/v1/signal/stream?topic=room", nil).WithContext(ctx)
+	r := authReq(http.MethodGet, "/v1/signal/stream?sessionId="+session.ID, nil).WithContext(ctx)
 	w := newFlushRecorder()
 
 	done := make(chan struct{})
@@ -368,11 +333,11 @@ func TestSignalStreamWritesSSEFramesForPublishedPayloads(t *testing.T) {
 	require.Eventually(t, func() bool {
 		p.getSignal().mu.RLock()
 		defer p.getSignal().mu.RUnlock()
-		return len(p.getSignal().subs["room"]) == 1
+		return len(p.getSignal().subs[signalSessionTopic(session.ID)]) == 1
 	}, time.Second, 5*time.Millisecond, "subscriber never registered")
 
-	p.getSignal().publish("room", []byte(`{"k":1}`))
-	p.getSignal().publish("room", []byte(`{"k":2}`))
+	p.getSignal().publish(signalSessionTopic(session.ID), []byte(`{"k":1}`))
+	p.getSignal().publish(signalSessionTopic(session.ID), []byte(`{"k":2}`))
 
 	// Wait for both writes to land in the recorder.
 	require.Eventually(t, func() bool {

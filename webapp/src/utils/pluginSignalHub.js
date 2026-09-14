@@ -1,7 +1,6 @@
 /**
- * Hub compatible with webrtc-swarm / signalhub: subscribe(channel) returns a Readable stream
- * with .pipe(), .on('open'), .once('open'); broadcast(channel, message, cb); close(cb).
- * Uses plugin POST /v1/signal/publish and GET /v1/signal/stream (SSE).
+ * Session hubs provide the small signalhub-compatible surface required by
+ * webrtc-swarm, backed exclusively by an authenticated server session.
  */
 import axios from 'axios';
 import {Readable} from 'stream';
@@ -43,8 +42,8 @@ function noop() {
     /* default callback */
 }
 
-function createSubscribeStream(topic, sessionId = '', inbox = false) {
-    const query = inbox ? 'inbox=true' : (sessionId ? `sessionId=${encodeURIComponent(sessionId)}` : `topic=${encodeURIComponent(topic)}`);
+function createSubscribeStream(sessionId = '', inbox = false) {
+    const query = inbox ? 'inbox=true' : `sessionId=${encodeURIComponent(sessionId)}`;
     const url = `/plugins/${pluginId}/v1/signal/stream?${query}`;
     const es = new EventSource(url);
 
@@ -100,7 +99,7 @@ function createSubscribeStream(topic, sessionId = '', inbox = false) {
          * stop being announced after the tab had been sitting there a while.
          */
         fireOpen();
-        debug(`[signal] stream interrupted on ${sessionId || topic}; EventSource will retry`);
+        debug(`[signal] stream interrupted on ${sessionId || 'inbox'}; EventSource will retry`);
     };
 
     const origDestroy = stream.destroy.bind(stream);
@@ -114,52 +113,9 @@ function createSubscribeStream(topic, sessionId = '', inbox = false) {
     return stream;
 }
 
-export default function pluginSignalHub(appName) {
-    const streams = [];
-
-    const hub = {
-        app: appName,
-
-        subscribe(channel) {
-            const topic = `${appName}/${channel}`;
-            const s = createSubscribeStream(topic);
-            streams.push(s);
-            return s;
-        },
-
-        broadcast(channel, message, cb) {
-            const topic = `${appName}/${channel}`;
-            const done = typeof cb === 'function' ? cb : noop;
-            axios.post(`/plugins/${pluginId}/v1/signal/publish`, {
-                topic,
-                payload: message,
-            }, {
-                headers: pluginCookieAuthHeaders(),
-                withCredentials: true,
-            }).then(() => done()).catch((err) => done(err));
-        },
-
-        close(cb) {
-            streams.forEach((s) => {
-                try {
-                    s.destroy();
-                } catch (e) {
-                    // ignore
-                }
-            });
-            streams.length = 0;
-            const fn = typeof cb === 'function' ? cb : noop;
-            setTimeout(fn, 0);
-        },
-    };
-
-    return hub;
-}
-
 /**
  * Creates a hub backed by a server-authorized signal session. Its public
- * surface matches pluginSignalHub so webrtc-swarm can migrate without knowing
- * whether the transport uses a legacy topic or an authorized session.
+ * surface matches the part of signalhub used by webrtc-swarm.
  */
 export async function createAuthorizedSignalHub(callId, participants, roomId = '') {
     const request = {
@@ -202,7 +158,7 @@ export function authorizedSignalHub(session) {
         session,
 
         subscribe() {
-            const stream = createSubscribeStream('', session.sessionId);
+            const stream = createSubscribeStream(session.sessionId);
             streams.push(stream);
             return stream;
         },
@@ -241,5 +197,5 @@ export function authorizedSignalHub(session) {
 // The server derives the inbox identity from the authenticated Mattermost
 // request. The browser never supplies a user id or a topic for this stream.
 export function authorizedSignalInbox() {
-    return createSubscribeStream('', '', true);
+    return createSubscribeStream('', true);
 }

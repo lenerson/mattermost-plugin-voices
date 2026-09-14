@@ -18,12 +18,11 @@ Atualizado em 13 de setembro de 2026. Este documento acompanha o plano em [archi
 - [x] Casos positivos e negativos para envelopes inválidos, falsificação de identidade, sessão incompatível, fallback e cleanup.
 - [x] TTL de 30 minutos, limite de cinco sessões por proprietário e encerramento HTTP pelo proprietário.
 - [x] Limites de dez assinaturas SSE simultâneas e sessenta operações de sinalização por minuto, por usuário.
+- [x] Canais de voz reutilizam sessões autorizadas e sincronizam participantes pela presença.
+- [x] Hubs e endpoints legados de tópicos arbitrários removidos do cliente e do servidor.
 
 ### Pendente
 
-- [ ] Migrar os canais de voz para sessões autorizadas.
-- [ ] Encerrar ou atualizar sessões quando participantes saírem de salas de voz.
-- [ ] Remover endpoints e hubs legados baseados em tópicos arbitrários.
 - [ ] Executar fluxo E2E com dois navegadores para a chamada privada completa.
 
 ## Próximas etapas

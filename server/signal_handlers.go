@@ -9,7 +9,6 @@ import (
 )
 
 const (
-	maxSignalTopicLen         = 1024
 	maxSignalRequestBodyBytes = 64 * 1024
 )
 
@@ -39,7 +38,6 @@ func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
 	var body struct {
-		Topic     string          `json:"topic"`
 		Version   int             `json:"version"`
 		SessionID string          `json:"sessionId"`
 		CallID    string          `json:"callId"`
@@ -51,45 +49,29 @@ func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if body.Version != 0 || body.SessionID != "" || body.CallID != "" || body.Type != "" {
-		envelope := signalEnvelope{
-			Version:   body.Version,
-			SessionID: body.SessionID,
-			CallID:    body.CallID,
-			Type:      body.Type,
-			SenderID:  r.Header.Get("Mattermost-User-Id"),
-			Payload:   body.Payload,
-		}
-		if body.Topic != "" || !isValidSignalEnvelope(envelope) {
-			http.Error(w, "invalid signal envelope", http.StatusBadRequest)
-			return
-		}
-		if err := p.getSignalSessions().authorize(envelope.SessionID, envelope.CallID, envelope.SenderID); err != nil {
-			http.Error(w, "signal session access denied", http.StatusForbidden)
-			return
-		}
-
-		encoded, err := json.Marshal(envelope)
-		if err != nil {
-			http.Error(w, "could not encode signal envelope", http.StatusInternalServerError)
-			return
-		}
-		p.getSignal().publish(signalSessionTopic(envelope.SessionID), encoded)
-		w.WriteHeader(http.StatusOK)
+	envelope := signalEnvelope{
+		Version:   body.Version,
+		SessionID: body.SessionID,
+		CallID:    body.CallID,
+		Type:      body.Type,
+		SenderID:  r.Header.Get("Mattermost-User-Id"),
+		Payload:   body.Payload,
+	}
+	if !isValidSignalEnvelope(envelope) {
+		http.Error(w, "invalid signal envelope", http.StatusBadRequest)
+		return
+	}
+	if err := p.getSignalSessions().authorize(envelope.SessionID, envelope.CallID, envelope.SenderID); err != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
 		return
 	}
 
-	// Legacy topics remain available only while the webapp migrates to the
-	// authorized envelope protocol. New code must use a signal session.
-	if body.Topic == "" || len(body.Topic) > maxSignalTopicLen {
-		http.Error(w, "invalid topic", http.StatusBadRequest)
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		http.Error(w, "could not encode signal envelope", http.StatusInternalServerError)
 		return
 	}
-	if len(body.Payload) == 0 {
-		body.Payload = []byte("{}")
-	}
-
-	p.getSignal().publish(body.Topic, body.Payload)
+	p.getSignal().publish(signalSessionTopic(envelope.SessionID), encoded)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -108,22 +90,22 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer p.getSignalLimits().releaseSubscription(userID)
-	topic := r.URL.Query().Get("topic")
+	var topic string
 	sessionID := r.URL.Query().Get("sessionId")
 	if r.URL.Query().Get("inbox") == "true" {
-		if topic != "" || sessionID != "" {
+		if r.URL.Query().Get("topic") != "" || sessionID != "" {
 			http.Error(w, "invalid signal inbox", http.StatusBadRequest)
 			return
 		}
 		topic = signalInboxTopic(r.Header.Get("Mattermost-User-Id"))
 	} else if sessionID != "" {
-		if topic != "" || p.getSignalSessions().authorize(sessionID, "", r.Header.Get("Mattermost-User-Id")) != nil {
+		if r.URL.Query().Get("topic") != "" || p.getSignalSessions().authorize(sessionID, "", r.Header.Get("Mattermost-User-Id")) != nil {
 			http.Error(w, "signal session access denied", http.StatusForbidden)
 			return
 		}
 		topic = signalSessionTopic(sessionID)
-	} else if topic == "" || len(topic) > maxSignalTopicLen {
-		http.Error(w, "invalid topic", http.StatusBadRequest)
+	} else {
+		http.Error(w, "signal session is required", http.StatusBadRequest)
 		return
 	}
 

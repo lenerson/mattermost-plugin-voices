@@ -23,13 +23,15 @@ func withHeartbeatInterval(t *testing.T, d time.Duration) {
 
 // startStream runs the SSE handler for a topic and returns the recorder plus a
 // stop function that cancels the request and waits for the handler to return.
-func startStream(t *testing.T, plugin *Plugin, topic string) (*flushRecorder, func()) {
+func startStream(t *testing.T, plugin *Plugin, callID string) (*flushRecorder, string, func()) {
 	t.Helper()
+	session, err := plugin.getSignalSessions().create("user1", callID, []string{"user2"})
+	require.NoError(t, err)
 
 	w := newFlushRecorder()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	r := httptest.NewRequest(http.MethodGet, "/v1/signal/stream?topic="+topic, nil).WithContext(ctx)
+	r := httptest.NewRequest(http.MethodGet, "/v1/signal/stream?sessionId="+session.ID, nil).WithContext(ctx)
 	r.Header.Set("Mattermost-User-Id", "user1")
 
 	done := make(chan struct{})
@@ -38,7 +40,7 @@ func startStream(t *testing.T, plugin *Plugin, topic string) (*flushRecorder, fu
 		close(done)
 	}()
 
-	return w, func() {
+	return w, signalSessionTopic(session.ID), func() {
 		cancel()
 		select {
 		case <-done:
@@ -55,7 +57,7 @@ func TestSignalStreamSendsHeartbeatWhileIdle(t *testing.T) {
 	withHeartbeatInterval(t, 10*time.Millisecond)
 
 	plugin := &Plugin{}
-	w, stop := startStream(t, plugin, "idle-topic")
+	w, _, stop := startStream(t, plugin, "idle-call")
 	defer stop()
 
 	require.Eventually(t, func() bool {
@@ -71,13 +73,13 @@ func TestSignalStreamDeliversDataAlongsideHeartbeat(t *testing.T) {
 	withHeartbeatInterval(t, 10*time.Millisecond)
 
 	plugin := &Plugin{}
-	w, stop := startStream(t, plugin, "busy-topic")
+	w, topic, stop := startStream(t, plugin, "busy-call")
 	defer stop()
 
 	// Publish repeatedly: the subscription is registered on the handler
 	// goroutine, and the broker drops messages that arrive before it exists.
 	require.Eventually(t, func() bool {
-		plugin.getSignal().publish("busy-topic", []byte(`{"hello":"world"}`))
+		plugin.getSignal().publish(topic, []byte(`{"hello":"world"}`))
 		return strings.Contains(w.body(), `data: {"hello":"world"}`)
 	}, 2*time.Second, 20*time.Millisecond)
 
@@ -89,7 +91,7 @@ func TestSignalStreamStopsWhenHeartbeatWriteFails(t *testing.T) {
 	withHeartbeatInterval(t, 10*time.Millisecond)
 
 	plugin := &Plugin{}
-	w, stop := startStream(t, plugin, "cancelled-topic")
+	w, _, stop := startStream(t, plugin, "cancelled-call")
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(w.body(), ": ping")
