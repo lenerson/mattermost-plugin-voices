@@ -22,6 +22,7 @@ import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../ut
 import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
 import {watchPeerConnection} from '../utils/peerConnectionWatch';
 import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
+import CallSession from '../utils/callSession';
 
 let gStream;
 let cPeer;
@@ -40,45 +41,19 @@ function pluginState(getState) {
  * call that ends without releasing these starves the webapp's own requests.
  * The session-long listener from listenVideoCall() is deliberately not tracked.
  */
-const callHubs = [];
-const callSwarms = [];
-const callWatches = [];
+const callSession = new CallSession();
 
 function trackHub(hub) {
-    callHubs.push(hub);
-    return hub;
+    return callSession.trackHub(hub);
 }
 
 function trackSwarm(sw, label, iceServers) {
-    callSwarms.push(sw);
-    callWatches.push(watchPeerConnection(sw, label, iceServers));
-    return sw;
+    return callSession.trackSwarm(sw, watchPeerConnection(sw, label, iceServers));
 }
 
-function releaseCallResources() {
-    while (callWatches.length) {
-        const cancel = callWatches.pop();
-        try {
-            cancel();
-        } catch (e) {
-            debug('connection watch cancel failed', e);
-        }
-    }
-    while (callSwarms.length) {
-        const sw = callSwarms.pop();
-        try {
-            sw.close();
-        } catch (e) {
-            debug('swarm close failed', e);
-        }
-    }
-    while (callHubs.length) {
-        const hub = callHubs.pop();
-        try {
-            hub.close();
-        } catch (e) {
-            debug('hub close failed', e);
-        }
+function releaseCallResources(callId) {
+    if (!callSession.end(callId)) {
+        callSession.releaseResources();
     }
 }
 
@@ -185,6 +160,10 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
         }
 
         const callId = newCallId();
+        if (!callSession.start(callId, peerId)) {
+            debug('Video call: another CallSession is still active.');
+            return;
+        }
 
         dispatch({
             type: ActionTypes.MAKE_VIDEO_CALL,
@@ -229,7 +208,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                         attachOutgoingDeclineListener(authorizedHub, user.id, peerId, () => {
                             clearOutgoingDeclineListener();
                             stopOutgoingRingback();
-                            releaseCallResources();
+                            releaseCallResources(callId);
                             dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
                         });
                     },
@@ -240,7 +219,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 const current = pluginState(getState);
                 if (current.callOutgoing && current.activeCallId === callId) {
                     stopOutgoingRingback();
-                    releaseCallResources();
+                    releaseCallResources(callId);
                     dispatch({type: ActionTypes.END_CALL});
                 }
             }
@@ -278,6 +257,11 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false, signa
 
         if (!signalSessionId || !callId) {
             debug('Ignoring incoming call without an authorized signal session');
+            return;
+        }
+
+        if (!callSession.start(callId, peerId)) {
+            debug('Ignoring incoming call while another CallSession is active.');
             return;
         }
 
@@ -654,7 +638,7 @@ export function rejectCall() {
         }
 
         clearOutgoingDeclineListener();
-        releaseCallResources();
+        releaseCallResources(state.activeCallId);
         dispatch({
             type: ActionTypes.REJECT_CALL,
         });
@@ -688,7 +672,7 @@ export function endCall() {
         stopOutgoingRingback();
         clearOutgoingDeclineListener();
         clearIncomingCancelListener();
-        releaseCallResources();
+        releaseCallResources(state.activeCallId);
 
         dispatch({
             type: ActionTypes.END_CALL,
