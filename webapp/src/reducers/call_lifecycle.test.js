@@ -1,4 +1,5 @@
 import ActionTypes from '../action_types';
+import {CallSessionState} from '../utils/callSession';
 
 import reducer from './index';
 
@@ -92,5 +93,20 @@ describe('call lifecycle', () => {
         ]);
 
         expect(state.activeSignalSessionId).toBe('session-2');
+    });
+
+    test('projects CallSession transitions without storing WebRTC resources', () => {
+        const state = reduce([
+            INIT,
+            {type: ActionTypes.MAKE_VIDEO_CALL, data: {peerId: 'p2', callId: 'c2'}},
+            {type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTING}},
+            {type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTED}},
+        ]);
+
+        expect(state.callSessionState).toBe(CallSessionState.CONNECTED);
+        expect(state).not.toHaveProperty('hubs');
+        expect(state).not.toHaveProperty('swarms');
+        expect(state).not.toHaveProperty('watches');
+        expect(reducer(state, {type: ActionTypes.END_CALL}).callSessionState).toBe(CallSessionState.IDLE);
     });
 });

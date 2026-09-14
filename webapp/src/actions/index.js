@@ -22,9 +22,7 @@ import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../ut
 import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
 import {watchPeerConnection} from '../utils/peerConnectionWatch';
 import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
-
-let gStream;
-let cPeer;
+import CallSession, {CallSessionState} from '../utils/callSession';
 
 /**
  * The plugin reducer is registered by initialize(), but never assume the slice
@@ -40,45 +38,19 @@ function pluginState(getState) {
  * call that ends without releasing these starves the webapp's own requests.
  * The session-long listener from listenVideoCall() is deliberately not tracked.
  */
-const callHubs = [];
-const callSwarms = [];
-const callWatches = [];
+const callSession = new CallSession();
 
 function trackHub(hub) {
-    callHubs.push(hub);
-    return hub;
+    return callSession.trackHub(hub);
 }
 
 function trackSwarm(sw, label, iceServers) {
-    callSwarms.push(sw);
-    callWatches.push(watchPeerConnection(sw, label, iceServers));
-    return sw;
+    return callSession.trackSwarm(sw, watchPeerConnection(sw, label, iceServers));
 }
 
-function releaseCallResources() {
-    while (callWatches.length) {
-        const cancel = callWatches.pop();
-        try {
-            cancel();
-        } catch (e) {
-            debug('connection watch cancel failed', e);
-        }
-    }
-    while (callSwarms.length) {
-        const sw = callSwarms.pop();
-        try {
-            sw.close();
-        } catch (e) {
-            debug('swarm close failed', e);
-        }
-    }
-    while (callHubs.length) {
-        const hub = callHubs.pop();
-        try {
-            hub.close();
-        } catch (e) {
-            debug('hub close failed', e);
-        }
+function releaseCallResources(callId) {
+    if (!callSession.end(callId)) {
+        callSession.releaseResources();
     }
 }
 
@@ -185,6 +157,10 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
         }
 
         const callId = newCallId();
+        if (!callSession.start(callId, peerId)) {
+            debug('Video call: another CallSession is still active.');
+            return;
+        }
 
         dispatch({
             type: ActionTypes.MAKE_VIDEO_CALL,
@@ -225,11 +201,11 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                             type: ActionTypes.SIGNAL_SESSION_READY,
                             data: {signalSessionId: authorizedHub.session.sessionId},
                         });
-                        listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
+                        listenAccept(user.id, peerId, authorizedHub, callId)(dispatch, getState);
                         attachOutgoingDeclineListener(authorizedHub, user.id, peerId, () => {
                             clearOutgoingDeclineListener();
                             stopOutgoingRingback();
-                            releaseCallResources();
+                            releaseCallResources(callId);
                             dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
                         });
                     },
@@ -240,7 +216,9 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 const current = pluginState(getState);
                 if (current.callOutgoing && current.activeCallId === callId) {
                     stopOutgoingRingback();
-                    releaseCallResources();
+                    callSession.fail(callId);
+                    dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.FAILED}});
+                    releaseCallResources(callId);
                     dispatch({type: ActionTypes.END_CALL});
                 }
             }
@@ -278,6 +256,11 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false, signa
 
         if (!signalSessionId || !callId) {
             debug('Ignoring incoming call without an authorized signal session');
+            return;
+        }
+
+        if (!callSession.start(callId, peerId)) {
+            debug('Ignoring incoming call while another CallSession is active.');
             return;
         }
 
@@ -339,7 +322,7 @@ export function listenVideoCall() {
     };
 }
 
-function listenAccept(userId, peerId, authorizedHub) {
+function listenAccept(userId, peerId, authorizedHub, callId) {
     return (dispatch, getState) => {
         const user = getUser(getState(), userId);
         const {configLoaded, callPeerId} = pluginState(getState);
@@ -364,6 +347,12 @@ function listenAccept(userId, peerId, authorizedHub) {
                 return;
             }
 
+            if (!callSession.beginConnecting(callId)) {
+                debug('Ignoring accepted call for an inactive CallSession.');
+                return;
+            }
+            dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTING}});
+
             const {stunServer: stun2, turnServer: turn2, turnServerUsername: tu2, turnServerCredential: tc2} = pluginState(getState);
 
             const iceServers = buildIceServers(stun2, turn2, tu2, tc2);
@@ -383,10 +372,15 @@ function listenAccept(userId, peerId, authorizedHub) {
             ), 'caller', iceServers);
 
             sw.on('peer', (peer, id) => {
+                if (!callSession.markConnected(callId)) {
+                    debug('Ignoring stale peer for an inactive CallSession.');
+                    return;
+                }
+                dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTED}});
                 debug('peer connected', id);
 
                 peer.on('data', (payload) => {
-                    cPeer = peer;
+                    callSession.setPeer(peer);
 
                     const data = JSON.parse(payload.toString());
                     debug('received peer data', {id, type: data.type});
@@ -458,7 +452,7 @@ function listenAccept(userId, peerId, authorizedHub) {
 
             sw.on('disconnect', (_peer, id) => {
                 debug('disconnected from a peer:', id);
-                cPeer = null;
+                callSession.setPeer(null);
                 dispatch({
                     type: ActionTypes.PEER_LOST,
                 });
@@ -502,6 +496,13 @@ export function acceptCall() {
             return;
         }
 
+        if (!callSession.beginConnecting(activeCallId)) {
+            debug('Cannot accept an inactive CallSession.');
+            dispatch({type: ActionTypes.END_CALL});
+            return;
+        }
+        dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTING}});
+
         const authorizedHub = trackHub(authorizedSignalHub({version: 1, sessionId: activeSignalSessionId, callId: activeCallId}));
         const accepthub = authorizedHub;
         accepthub.subscribe('all').on('data', () => {
@@ -528,10 +529,15 @@ export function acceptCall() {
         ), 'callee', iceServers);
 
         sw.on('peer', (peer, id) => {
+            if (!callSession.markConnected(activeCallId)) {
+                debug('Ignoring stale peer for an inactive CallSession.');
+                return;
+            }
+            dispatch({type: ActionTypes.CALL_SESSION_TRANSITION, data: {state: CallSessionState.CONNECTED}});
             debug('Peer', typeof peer.hasOwnProperty, id);
 
             peer.on('data', (payload) => {
-                cPeer = peer;
+                callSession.setPeer(peer);
 
                 const data = JSON.parse(payload.toString());
 
@@ -604,7 +610,7 @@ export function acceptCall() {
 
         sw.on('disconnect', (_peer, id) => {
             debug('disconnected from a peer:', id);
-            cPeer = null;
+            callSession.setPeer(null);
             dispatch({
                 type: ActionTypes.PEER_LOST,
             });
@@ -654,7 +660,7 @@ export function rejectCall() {
         }
 
         clearOutgoingDeclineListener();
-        releaseCallResources();
+        releaseCallResources(state.activeCallId);
         dispatch({
             type: ActionTypes.REJECT_CALL,
         });
@@ -678,17 +684,11 @@ export function endCall() {
             }
         }
 
-        if (gStream) {
-            gStream.getTracks().forEach((track) => track.stop());
-            gStream = null;
-        }
-
-        cPeer = null;
         stopIncomingRing();
         stopOutgoingRingback();
         clearOutgoingDeclineListener();
         clearIncomingCancelListener();
-        releaseCallResources();
+        releaseCallResources(state.activeCallId);
 
         dispatch({
             type: ActionTypes.END_CALL,
@@ -770,7 +770,7 @@ function captureAndShareMedia(peer, dispatch, getState) {
             return;
         }
 
-        gStream = stream;
+        callSession.setStream(stream);
         peer.addStream(stream);
 
         dispatch({type: ActionTypes.SELF_STREAM_SET, data: stream});
@@ -805,19 +805,19 @@ export function audioToggle() {
     return (dispatch, getState) => {
         const {audioOn} = pluginState(getState);
 
-        if (!cPeer) {
+        const peer = callSession.peer;
+        const stream = callSession.stream;
+        if (!peer) {
             return;
         }
-        if (gStream) {
-            const t = gStream.getAudioTracks()[0];
+        if (stream) {
+            const t = stream.getAudioTracks()[0];
             if (t) {
                 t.enabled = !audioOn;
             }
         }
 
-        if (cPeer) {
-            cPeer.send(JSON.stringify({type: 'audioToggle', enabled: !audioOn}));
-        }
+        peer.send(JSON.stringify({type: 'audioToggle', enabled: !audioOn}));
         dispatch({type: ActionTypes.AUDIO_TOGGLE,
             data: !audioOn});
     };
@@ -827,12 +827,15 @@ export function videoToggle() {
     return (dispatch, getState) => {
         const {videoOn} = pluginState(getState);
 
-        if (!cPeer) {
+        const peer = callSession.peer;
+        const stream = callSession.stream;
+        const callId = pluginState(getState).activeCallId;
+        if (!peer || !callId) {
             return;
         }
 
         const turningOn = !videoOn;
-        const track = gStream && gStream.getVideoTracks()[0];
+        const track = stream && stream.getVideoTracks()[0];
 
         /*
          * A call placed with the phone button never opened the camera, so
@@ -842,29 +845,29 @@ export function videoToggle() {
         if (turningOn && !track) {
             navigator.mediaDevices.getUserMedia({video: true}).then((videoStream) => {
                 const acquired = videoStream.getVideoTracks()[0];
-                if (!acquired || !cPeer) {
+                if (!acquired || callSession.callId !== callId || callSession.peer !== peer) {
                     return;
                 }
 
-                if (gStream) {
+                if (callSession.stream) {
                     /*
                      * Add to the stream the peer already holds rather than
                      * sending a second one: a fresh stream would replace the
                      * far side's reference and take the audio away with it.
                      */
-                    gStream.addTrack(acquired);
-                    cPeer.addTrack(acquired, gStream);
+                    callSession.stream.addTrack(acquired);
+                    peer.addTrack(acquired, callSession.stream);
                 } else {
-                    gStream = videoStream;
-                    cPeer.addStream(videoStream);
+                    callSession.setStream(videoStream);
+                    peer.addStream(videoStream);
                 }
 
                 // New object for the same tracks, so the preview re-attaches.
                 dispatch({
                     type: ActionTypes.SELF_STREAM_SET,
-                    data: new MediaStream(gStream.getTracks()),
+                    data: new MediaStream(callSession.stream.getTracks()),
                 });
-                cPeer.send(JSON.stringify({type: 'videoToggle', enabled: true}));
+                peer.send(JSON.stringify({type: 'videoToggle', enabled: true}));
                 dispatch({type: ActionTypes.VIDEO_TOGGLE, data: true});
             }).catch((e) => {
                 debug('Could not open the camera mid-call', e);
@@ -879,7 +882,7 @@ export function videoToggle() {
         if (track) {
             track.enabled = turningOn;
         }
-        cPeer.send(JSON.stringify({type: 'videoToggle', enabled: turningOn}));
+        peer.send(JSON.stringify({type: 'videoToggle', enabled: turningOn}));
         dispatch({type: ActionTypes.VIDEO_TOGGLE, data: turningOn});
     };
 }

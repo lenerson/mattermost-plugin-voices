@@ -1,6 +1,7 @@
 import {combineReducers} from 'redux';
 
 import ActionTypes from '../action_types';
+import {CallSessionState} from '../utils/callSession';
 
 const configLoaded = (state = false, action) => {
     switch (action.type) {
@@ -179,6 +180,22 @@ const activeSignalSessionId = (state = null, action) => {
     }
 };
 
+const callSessionState = (state = CallSessionState.IDLE, action) => {
+    switch (action.type) {
+    case ActionTypes.MAKE_VIDEO_CALL:
+    case ActionTypes.RECEIVE_VIDEO_CALL:
+        return CallSessionState.RINGING;
+    case ActionTypes.CALL_SESSION_TRANSITION:
+        return (action.data && action.data.state) || state;
+    case ActionTypes.REJECT_CALL:
+    case ActionTypes.END_CALL:
+    case ActionTypes.OUTGOING_CALL_DECLINED:
+        return CallSessionState.IDLE;
+    default:
+        return state;
+    }
+};
+
 const outgoingCallDeclined = (state = false, action) => {
     switch (action.type) {
     case ActionTypes.OUTGOING_CALL_DECLINED:
@@ -342,6 +359,7 @@ export default combineReducers({
     callPeerId,
     activeCallId,
     activeSignalSessionId,
+    callSessionState,
     outgoingCallDeclined,
     callPeerStream,
     callPeerVideoOn,
