@@ -1,3 +1,4 @@
+/* eslint-disable max-nested-callbacks */
 jest.mock('manifest', () => ({id: 'mattermost-webrtc-video'}), {virtual: true});
 jest.mock('webrtc-swarm', () => jest.fn());
 jest.mock('../../../utils/pluginSignalHub', () => ({
@@ -20,6 +21,8 @@ jest.mock('../../../utils/voiceInvitesApi', () => ({
     sendVoiceRoomInvite: jest.fn(),
 }));
 
+import swarm from 'webrtc-swarm';
+
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
 import {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {respondVoiceRoomInvite, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
@@ -28,7 +31,6 @@ import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 
 import {AudioCallPanel, SWARM_CLOSE_TIMEOUT_MS} from './audio_group_call';
-import swarm from 'webrtc-swarm';
 
 const VOICE_INVITE_TTL_MS = 5 * 60 * 1000;
 

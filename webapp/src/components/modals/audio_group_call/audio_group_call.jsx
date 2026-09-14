@@ -1571,7 +1571,6 @@ export class AudioCallPanel extends React.Component {
         const {
             initialized,
             swarmInitialized,
-            audioOn,
             audioEnabled,
             activeRoom,
             channelList,

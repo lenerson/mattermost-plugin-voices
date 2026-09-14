@@ -1,7 +1,13 @@
 import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from './outgoingDeclineListen';
 
 function fakeHub() {
-    const stream = {handler: null, destroy: jest.fn(), on: (_event, handler) => { stream.handler = handler; }};
+    const stream = {
+        handler: null,
+        destroy: jest.fn(),
+        on: (_event, handler) => {
+            stream.handler = handler;
+        },
+    };
     return {stream, subscribe: jest.fn(() => stream)};
 }
 
