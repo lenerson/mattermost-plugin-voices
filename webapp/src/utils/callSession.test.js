@@ -54,4 +54,14 @@ describe('CallSession', () => {
         expect(session.fail('call-1')).toBe(true);
         expect(session.state).toBe(CallSessionState.FAILED);
     });
+
+    test('rejects a peer event that arrives after the call has ended', () => {
+        const session = new CallSession();
+        session.start('call-1', 'peer-1');
+        session.beginConnecting('call-1');
+        session.end('call-1');
+
+        expect(session.markConnected('call-1')).toBe(false);
+        expect(session.state).toBe(CallSessionState.IDLE);
+    });
 });

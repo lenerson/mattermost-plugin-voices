@@ -219,6 +219,7 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
                 const current = pluginState(getState);
                 if (current.callOutgoing && current.activeCallId === callId) {
                     stopOutgoingRingback();
+                    callSession.fail(callId);
                     releaseCallResources(callId);
                     dispatch({type: ActionTypes.END_CALL});
                 }
