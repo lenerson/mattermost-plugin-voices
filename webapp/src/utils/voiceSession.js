@@ -94,7 +94,13 @@ export default class VoiceSession {
             this.state = VOICE_SESSION_IDLE;
             const callbacks = this.cleanupCallbacks;
             this.cleanupCallbacks = [];
-            callbacks.forEach((callback) => callback());
+            callbacks.forEach((callback) => {
+                try {
+                    callback();
+                } catch (error) {
+                    debug('voice cleanup callback failed', error);
+                }
+            });
         };
 
         if (!swarm || typeof swarm.close !== 'function') {

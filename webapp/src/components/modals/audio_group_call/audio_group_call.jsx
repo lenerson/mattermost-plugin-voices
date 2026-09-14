@@ -17,6 +17,7 @@ import {respondVoiceRoomInvite, searchVoiceInviteUsers, sendVoiceRoomInvite} fro
 import {subscribeVoiceInviteDecisions, subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
+import VoiceSession, {VOICE_SESSION_CLOSING} from '../../../utils/voiceSession';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -173,15 +174,45 @@ export class AudioCallPanel extends React.Component {
             voiceInviteResponseError: '',
         };
 
-        this.swarmInstance = null;
         this.directoryPoll = null;
         this.presenceHeartbeat = null;
-        this.currentMyStream = null;
         this.connectPending = false;
         this.mediaRequestPending = false;
-        this.cleanupInProgress = false;
-        this.cleanupCallbacks = [];
-        this.pendingPeerTimers = new Set();
+        this.voiceSession = new VoiceSession({closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS});
+        Object.defineProperties(this, {
+            // Transitional adapters keep the component tests focused on visible
+            // behaviour while resource ownership moves into VoiceSession.
+            swarmInstance: {
+                get: () => this.voiceSession.swarm,
+                set: (value) => {
+                    this.voiceSession.swarm = value;
+                },
+            },
+            currentMyStream: {
+                get: () => this.voiceSession.stream,
+                set: (value) => {
+                    this.voiceSession.stream = value;
+                },
+            },
+            pendingPeerTimers: {
+                get: () => this.voiceSession.peerTimers,
+                set: (value) => {
+                    this.voiceSession.peerTimers = value;
+                },
+            },
+            cleanupInProgress: {
+                get: () => this.voiceSession.state === VOICE_SESSION_CLOSING,
+                set: (value) => {
+                    this.voiceSession.state = value ? VOICE_SESSION_CLOSING : 'idle';
+                },
+            },
+            cleanupCallbacks: {
+                get: () => this.voiceSession.cleanupCallbacks,
+                set: (value) => {
+                    this.voiceSession.cleanupCallbacks = value;
+                },
+            },
+        });
         this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
@@ -779,44 +810,6 @@ export class AudioCallPanel extends React.Component {
     };
 
     cleanupConnection(done) {
-        const onFinished = typeof done === 'function' ? done : function noopCallback() {
-            /* optional async completion */
-        };
-        if (this.cleanupInProgress) {
-            this.cleanupCallbacks.push(onFinished);
-            return;
-        }
-
-        this.cleanupInProgress = true;
-        this.cleanupCallbacks = [onFinished];
-        let finished = false;
-        let closeFallback = null;
-        const finish = () => {
-            if (finished) {
-                return;
-            }
-            finished = true;
-            if (closeFallback) {
-                clearTimeout(closeFallback);
-                closeFallback = null;
-            }
-            this.cleanupInProgress = false;
-            const callbacks = this.cleanupCallbacks;
-            this.cleanupCallbacks = [];
-            callbacks.forEach((callback) => {
-                try {
-                    callback();
-                } catch (error) {
-                    debug('voice cleanup callback failed', error);
-                }
-            });
-        };
-
-        const pendingPeerTimers = this.pendingPeerTimers || new Set();
-        this.pendingPeerTimers = pendingPeerTimers;
-        pendingPeerTimers.forEach((timer) => clearTimeout(timer));
-        pendingPeerTimers.clear();
-
         Object.values(this.state.playBacks || {}).forEach((aud) => {
             try {
                 aud.pause();
@@ -825,35 +818,7 @@ export class AudioCallPanel extends React.Component {
                 /* ignore */
             }
         });
-
-        if (this.currentMyStream) {
-            try {
-                this.currentMyStream.getTracks().forEach((t) => t.stop());
-            } catch (e) {
-                /* ignore */
-            }
-            this.currentMyStream = null;
-        }
-
-        if (this.swarmInstance) {
-            const sw = this.swarmInstance;
-            this.swarmInstance = null;
-
-            closeFallback = setTimeout(() => {
-                debug('voice swarm close timed out; continuing cleanup');
-                finish();
-            }, SWARM_CLOSE_TIMEOUT_MS);
-
-            try {
-                sw.close(finish);
-            } catch (e) {
-                debug('voice swarm close failed; continuing cleanup', e);
-                finish();
-            }
-            return;
-        }
-
-        finish();
+        this.voiceSession.close(done);
     }
 
     resetActiveRoomState() {
@@ -953,6 +918,10 @@ export class AudioCallPanel extends React.Component {
             if (this.isUnmounted) {
                 return;
             }
+            if (!this.voiceSession.start(roomId)) {
+                debug('Cannot start a second voice room session.');
+                return;
+            }
             this.setState({
                 activeRoom: {roomId, name},
                 initialized: false,
@@ -1050,7 +1019,9 @@ export class AudioCallPanel extends React.Component {
             }
 
             debug({audioEnabled, videoEnabled});
-            this.currentMyStream = myStream;
+            if (!this.voiceSession.setStream(requestedRoomID, myStream)) {
+                return;
+            }
             this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
                 if (this.state.activeRoom && this.state.activeRoom.roomId === requestedRoomID) {
                     this.announcePresence(requestedRoomID);
@@ -1112,7 +1083,9 @@ export class AudioCallPanel extends React.Component {
                 },
             );
 
-            this.swarmInstance = sw;
+            if (!this.voiceSession.setConnection(activeRoom.roomId, hub, sw)) {
+                return;
+            }
             sw.on('peer', this.handleConnect.bind(this));
             sw.on('disconnect', this.handleDisconnect.bind(this));
 
