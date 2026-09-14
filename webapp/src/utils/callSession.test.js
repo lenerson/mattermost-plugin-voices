@@ -1,3 +1,4 @@
+/* eslint-disable max-nested-callbacks */
 import CallSession, {CallSessionState} from './callSession';
 
 describe('CallSession', () => {
