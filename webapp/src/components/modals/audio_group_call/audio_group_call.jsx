@@ -181,6 +181,7 @@ export class AudioCallPanel extends React.Component {
         this.mediaRequestPending = false;
         this.cleanupInProgress = false;
         this.cleanupCallbacks = [];
+        this.pendingPeerTimers = new Set();
         this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
@@ -811,6 +812,11 @@ export class AudioCallPanel extends React.Component {
             });
         };
 
+        const pendingPeerTimers = this.pendingPeerTimers || new Set();
+        this.pendingPeerTimers = pendingPeerTimers;
+        pendingPeerTimers.forEach((timer) => clearTimeout(timer));
+        pendingPeerTimers.clear();
+
         Object.values(this.state.playBacks || {}).forEach((aud) => {
             try {
                 aud.pause();
@@ -1144,7 +1150,8 @@ export class AudioCallPanel extends React.Component {
             };
             this.setState({peerStreams: newPeerStreams});
 
-            setTimeout(() => {
+            const timeout = setTimeout(() => {
+                this.pendingPeerTimers.delete(timeout);
                 this.setState((prev) => {
                     const ps = prev.peerStreams;
                     if (ps[message.from] && !ps[message.from].connected) {
@@ -1155,6 +1162,7 @@ export class AudioCallPanel extends React.Component {
                     return null;
                 });
             }, 20000);
+            this.pendingPeerTimers.add(timeout);
         }
     }
 

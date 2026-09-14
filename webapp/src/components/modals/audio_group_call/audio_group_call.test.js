@@ -1086,6 +1086,19 @@ describe('AudioCallPanel leaving a room', () => {
         expect(panel.cleanupInProgress).toBe(false);
     });
 
+    test('cancels pending peer cleanup timers when leaving a room', () => {
+        jest.useFakeTimers();
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+        panel.handleHubData({type: 'connect', from: 'peer-uuid', fromUsername: 'bruno'});
+
+        expect(jest.getTimerCount()).toBeGreaterThan(0);
+        panel.cleanupConnection();
+
+        expect(panel.pendingPeerTimers.size).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
+    });
+
     test('continues cleanup when the swarm omits its close callback', () => {
         jest.useFakeTimers();
         const done = jest.fn();
