@@ -18,6 +18,7 @@ import {subscribeVoiceInviteDecisions, subscribeVoiceInvites} from '../../../uti
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import VoiceSession, {VOICE_SESSION_CLOSING} from '../../../utils/voiceSession';
+import VoiceRoomController from '../../../utils/voiceRoomController';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -174,8 +175,6 @@ export class AudioCallPanel extends React.Component {
             voiceInviteResponseError: '',
         };
 
-        this.directoryPoll = null;
-        this.presenceHeartbeat = null;
         this.connectPending = false;
         this.mediaRequestPending = false;
         this.voiceSession = new VoiceSession({closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS});
@@ -215,6 +214,12 @@ export class AudioCallPanel extends React.Component {
         });
         this.roomTransitionId = 0;
         this.isUnmounted = false;
+        this.roomController = new VoiceRoomController({
+            fetchRooms: fetchVoiceRooms,
+            sendPresence: sendVoicePresence,
+            onRooms: (rooms) => this.applyRooms(rooms),
+            onError: (message, error) => this.reportDirectoryError(message, error),
+        });
         this.unsubscribeDirectoryEvents = null;
         this.unsubscribeVoiceInvites = null;
         this.unsubscribeVoiceInviteDecisions = null;
@@ -282,9 +287,7 @@ export class AudioCallPanel extends React.Component {
     }
 
     refreshRooms() {
-        return fetchVoiceRooms().
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => this.reportDirectoryError('Could not load the voice channels.', err));
+        return this.roomController.refresh();
     }
 
     startDirectoryEvents() {
@@ -641,25 +644,16 @@ export class AudioCallPanel extends React.Component {
     }
 
     bootstrapDirectory() {
-        if (this.directoryPoll) {
-            return;
-        }
-        this.refreshRooms();
-        this.directoryPoll = setInterval(() => this.refreshRooms(), DIRECTORY_POLL_MS);
+        this.roomController.startDirectory(DIRECTORY_POLL_MS);
     }
 
     stopDirectory() {
-        if (this.directoryPoll) {
-            clearInterval(this.directoryPoll);
-            this.directoryPoll = null;
-        }
+        this.roomController.stopDirectory();
     }
 
     announcePresence(roomId) {
         const microphoneOn = Boolean(this.state.audioOn && this.state.audioEnabled);
-        return sendVoicePresence(roomId, microphoneOn).
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => debug('voice presence heartbeat failed', err));
+        return this.roomController.announcePresence(roomId, microphoneOn);
     }
 
     /**
@@ -667,26 +661,22 @@ export class AudioCallPanel extends React.Component {
      * refreshed, which is what covers a browser that closes without leaving.
      */
     startPresence(roomId) {
-        this.stopPresence();
-        this.announcePresence(roomId);
-        this.presenceHeartbeat = setInterval(() => this.announcePresence(roomId), PRESENCE_HEARTBEAT_MS);
+        this.roomController.startPresence(
+            roomId,
+            () => Boolean(this.state.audioOn && this.state.audioEnabled),
+            PRESENCE_HEARTBEAT_MS,
+        );
     }
 
     stopPresence() {
-        if (this.presenceHeartbeat) {
-            clearInterval(this.presenceHeartbeat);
-            this.presenceHeartbeat = null;
-        }
+        this.roomController.stopPresence();
     }
 
     clearPresence() {
-        this.stopPresence();
-
         // Do not wait for the next directory poll: the endpoint returns the
         // refreshed room list, so apply it as soon as the departure lands.
-        return sendVoicePresence('', false).
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => debug('clearing voice presence failed', err));
+        this.stopPresence();
+        return this.roomController.announcePresence('', false);
     }
 
     /**
