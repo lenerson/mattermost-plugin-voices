@@ -21,7 +21,8 @@ export function attachIncomingCancelListener(hub, calleeId, callerId, callId, on
                 return;
             }
         }
-        if (data && data.callerId === callerId && (!callId || data.callId === callId)) {
+        const senderId = data && (data.fromUserId || data.callerId);
+        if (data && senderId === callerId && (!callId || data.callId === callId)) {
             onCancel();
         }
     };

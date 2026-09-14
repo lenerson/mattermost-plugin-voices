@@ -1,5 +1,9 @@
+/* eslint-disable max-nested-callbacks */
 jest.mock('manifest', () => ({id: 'mattermost-webrtc-video'}), {virtual: true});
 jest.mock('webrtc-swarm', () => jest.fn());
+jest.mock('../../../utils/pluginSignalHub', () => ({
+    createAuthorizedSignalHub: jest.fn(),
+}));
 jest.mock('../../../utils/voiceRoomsApi', () => ({
     createVoiceRoom: jest.fn(),
     deleteVoiceRoom: jest.fn(),
@@ -17,7 +21,10 @@ jest.mock('../../../utils/voiceInvitesApi', () => ({
     sendVoiceRoomInvite: jest.fn(),
 }));
 
+import swarm from 'webrtc-swarm';
+
 import {sendVoicePresence} from '../../../utils/voiceRoomsApi';
+import {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {respondVoiceRoomInvite, sendVoiceRoomInvite} from '../../../utils/voiceInvitesApi';
 import {emitVoiceInvite, emitVoiceInviteDecision} from '../../../utils/voiceInviteEvents';
 import {emitVoicePresenceChange} from '../../../utils/voicePresenceEvents';
@@ -313,6 +320,263 @@ describe('AudioCallPanel room directory', () => {
 
         panel.handleExclusivePresenceChange({userId: 'user-1', previousRoomId: 'room-1', roomId: 'room-2'});
         expect(panel.disconnectLocalRoom).toHaveBeenCalledTimes(1);
+    });
+});
+
+describe('AudioCallPanel authorized voice signaling', () => {
+    function createPanel() {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            username: 'anna',
+            displayName: 'Anna',
+            profilesById: {},
+            isSystemAdmin: false,
+            configLoaded: true,
+            config: {DiagnosticId: 'diagnostic-id'},
+        });
+        panel.state.activeRoom = {roomId: 'room-1', name: 'Standup'};
+        return panel;
+    }
+
+    beforeEach(() => {
+        createAuthorizedSignalHub.mockReset();
+        swarm.mockReset();
+    });
+
+    test('connects a room through its authorized shared session', async () => {
+        const stream = {on: jest.fn()};
+        const hub = {subscribe: jest.fn(() => stream), broadcast: jest.fn(), close: jest.fn()};
+        const swarmInstance = {on: jest.fn()};
+        createAuthorizedSignalHub.mockResolvedValue(hub);
+        swarm.mockReturnValue(swarmInstance);
+        const panel = createPanel();
+
+        await panel.connectToSwarm();
+
+        expect(createAuthorizedSignalHub).toHaveBeenCalledWith('voice-room-1', [], 'room-1');
+        expect(swarm).toHaveBeenCalledWith(hub, expect.objectContaining({uuid: 'user-1'}));
+        expect(hub.broadcast).toHaveBeenCalledWith('all', expect.objectContaining({type: 'connect', from: 'user-1'}));
+        expect(panel.connectPending).toBe(false);
+    });
+
+    test('does not create a swarm when authorized session creation fails', async () => {
+        createAuthorizedSignalHub.mockRejectedValue(new Error('session unavailable'));
+        const panel = createPanel();
+
+        await panel.connectToSwarm();
+
+        expect(swarm).not.toHaveBeenCalled();
+        expect(panel.swarmInstance).toBeNull();
+        expect(panel.connectPending).toBe(false);
+    });
+
+    test('closes a session created after the user has moved to another room', async () => {
+        let resolveSession;
+        const pendingSession = new Promise((resolve) => {
+            resolveSession = resolve;
+        });
+        const hub = {close: jest.fn(), subscribe: jest.fn(), broadcast: jest.fn()};
+        createAuthorizedSignalHub.mockReturnValue(pendingSession);
+        const panel = createPanel();
+
+        const connecting = panel.connectToSwarm();
+        panel.state.activeRoom = {roomId: 'room-2', name: 'Planning'};
+        resolveSession(hub);
+        await connecting;
+
+        expect(hub.close).toHaveBeenCalledTimes(1);
+        expect(swarm).not.toHaveBeenCalled();
+        expect(panel.connectPending).toBe(false);
+    });
+});
+
+describe('AudioCallPanel connection reconciliation', () => {
+    test('keeps render free of media and signaling side effects', () => {
+        const panel = new AudioCallPanel({
+            userId: 'user-1',
+            profilesById: {},
+            isSystemAdmin: false,
+        });
+        panel.state = {
+            ...panel.state,
+            activeRoom: {roomId: 'room-1', name: 'Standup'},
+            audioOn: true,
+            initialized: true,
+        };
+        panel.handleRequestPerms = jest.fn();
+        panel.connectToSwarm = jest.fn();
+
+        panel.render();
+        panel.render();
+
+        expect(panel.handleRequestPerms).not.toHaveBeenCalled();
+        expect(panel.connectToSwarm).not.toHaveBeenCalled();
+    });
+
+    test('starts media acquisition once when an active room needs permissions', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true, initialized: false};
+        panel.handleRequestPerms = jest.fn(() => {
+            panel.state.initialized = true;
+        });
+        panel.connectToSwarm = jest.fn();
+
+        panel.componentDidUpdate();
+        panel.componentDidUpdate();
+
+        expect(panel.handleRequestPerms).toHaveBeenCalledTimes(1);
+        expect(panel.connectToSwarm).toHaveBeenCalledWith();
+    });
+
+    test('does not reconnect while a connection is pending or already active', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, initialized: true};
+        panel.connectToSwarm = jest.fn();
+        panel.connectPending = true;
+
+        panel.componentDidUpdate();
+        panel.connectPending = false;
+        panel.swarmInstance = {};
+        panel.componentDidUpdate();
+
+        expect(panel.connectToSwarm).not.toHaveBeenCalled();
+    });
+
+    test('does not request media while an earlier request is pending', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true, initialized: false};
+        panel.mediaRequestPending = true;
+        panel.handleRequestPerms = jest.fn();
+
+        panel.reconcileVoiceConnection();
+
+        expect(panel.handleRequestPerms).not.toHaveBeenCalled();
+    });
+
+    test('stops media returned after the user has left the requested room', async () => {
+        let resolveMedia;
+        const pendingMedia = new Promise((resolve) => {
+            resolveMedia = resolve;
+        });
+        const originalNavigator = global.navigator;
+        global.navigator = {
+            mediaDevices: {getUserMedia: jest.fn(() => pendingMedia)},
+        };
+        const track = {stop: jest.fn()};
+        const stream = {getTracks: () => [track]};
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true};
+        applyStateSynchronously(panel);
+        panel.announcePresence = jest.fn();
+
+        try {
+            const requesting = panel.handleRequestPerms();
+            panel.state.activeRoom = null;
+            resolveMedia(stream);
+            await requesting;
+
+            expect(track.stop).toHaveBeenCalledTimes(1);
+            expect(panel.currentMyStream).toBeNull();
+            expect(panel.state.initialized).toBe(false);
+            expect(panel.announcePresence).not.toHaveBeenCalled();
+            expect(panel.mediaRequestPending).toBe(false);
+        } finally {
+            global.navigator = originalNavigator;
+        }
+    });
+});
+
+describe('AudioCallPanel external signaling validation', () => {
+    test.each([null, {}, [], {type: 'connect'}, {type: 'connect', from: 'user-1', fromUsername: 'self'}])(
+        'ignores an invalid or self-originated hub message: %p',
+        (message) => {
+            const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+            applyStateSynchronously(panel);
+
+            panel.handleHubData(message);
+
+            expect(panel.state.swarmInitialized).toBe(false);
+            expect(panel.state.peerStreams).toEqual({});
+        },
+    );
+
+    test('accepts a valid hub connect message from another participant', () => {
+        jest.useFakeTimers();
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+
+        panel.handleHubData({
+            type: 'connect',
+            from: 'peer-uuid',
+            fromUserId: 'user-2',
+            fromUsername: 'bruno',
+            fromDisplayName: 'Bruno',
+        });
+
+        expect(panel.state.swarmInitialized).toBe(true);
+        expect(panel.state.peerStreams).toEqual({
+            'peer-uuid': {userId: 'user-2', username: 'bruno', displayName: 'Bruno'},
+        });
+        jest.clearAllTimers();
+        jest.useRealTimers();
+    });
+
+    test.each(['not json', '[]', '{"type":"audioToggle","enabled":"yes"}', '{"type":"sendHandshake"}'])(
+        'ignores an invalid peer payload: %s',
+        (raw) => {
+            const callbacks = {};
+            const peer = {
+                on: jest.fn((event, callback) => {
+                    callbacks[event] = callback;
+                }),
+                send: jest.fn(),
+            };
+            const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+            applyStateSynchronously(panel);
+
+            panel.handleConnect(peer, 'peer-uuid');
+            expect(() => callbacks.data({toString: () => raw})).not.toThrow();
+
+            expect(panel.state.peerStreams['peer-uuid']).toEqual(expect.objectContaining({audioOn: true, videoOn: false}));
+        },
+    );
+
+    test('applies a valid peer microphone update', () => {
+        const callbacks = {};
+        const peer = {
+            on: jest.fn((event, callback) => {
+                callbacks[event] = callback;
+            }),
+            send: jest.fn(),
+        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+
+        panel.handleConnect(peer, 'peer-uuid');
+        callbacks.data({toString: () => '{"type":"audioToggle","enabled":false}'});
+
+        expect(panel.state.peerStreams['peer-uuid'].audioOn).toBe(false);
+    });
+
+    test('uses the authenticated prop identity for peer handshakes', () => {
+        const callbacks = {};
+        const peer = {
+            on: jest.fn((event, callback) => {
+                callbacks[event] = callback;
+            }),
+            send: jest.fn(),
+        };
+        const panel = new AudioCallPanel({userId: 'authenticated-user', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+        panel.state.userId = 'spoofed-state-user';
+
+        panel.handleConnect(peer, 'peer-uuid');
+
+        expect(peer.send).toHaveBeenCalledWith(JSON.stringify({
+            type: 'sendHandshake',
+            userId: 'authenticated-user',
+        }));
+        expect(peer.send).not.toHaveBeenCalledWith(expect.stringContaining('spoofed-state-user'));
     });
 });
 
@@ -776,6 +1040,67 @@ describe('AudioCallPanel leaving a room', () => {
         expect(thrownError).toBeNull();
         expect(panel.swarmInstance).toBeNull();
         expect(done).toHaveBeenCalledTimes(1);
+    });
+
+    test('queues concurrent cleanup callbacks until one swarm close completes', () => {
+        const cleanup = {};
+        const firstDone = jest.fn();
+        const secondDone = jest.fn();
+        const panel = {
+            cleanupInProgress: false,
+            cleanupCallbacks: [],
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(captureCleanupCallback(cleanup))},
+        };
+
+        AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
+        AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
+
+        expect(panel.swarmInstance).toBeNull();
+        expect(firstDone).not.toHaveBeenCalled();
+        expect(secondDone).not.toHaveBeenCalled();
+        expect(cleanup.finish).toBeDefined();
+
+        cleanup.finish();
+
+        expect(firstDone).toHaveBeenCalledTimes(1);
+        expect(secondDone).toHaveBeenCalledTimes(1);
+        expect(panel.cleanupInProgress).toBe(false);
+    });
+
+    test('continues a queued cleanup when the swarm close callback never arrives', () => {
+        jest.useFakeTimers();
+        const firstDone = jest.fn();
+        const secondDone = jest.fn();
+        const panel = {
+            cleanupInProgress: false,
+            cleanupCallbacks: [],
+            state: {playBacks: {}},
+            currentMyStream: null,
+            swarmInstance: {close: jest.fn(leaveClosePending)},
+        };
+
+        AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
+        AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
+        jest.advanceTimersByTime(SWARM_CLOSE_TIMEOUT_MS);
+
+        expect(firstDone).toHaveBeenCalledTimes(1);
+        expect(secondDone).toHaveBeenCalledTimes(1);
+        expect(panel.cleanupInProgress).toBe(false);
+    });
+
+    test('cancels pending peer cleanup timers when leaving a room', () => {
+        jest.useFakeTimers();
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+        panel.handleHubData({type: 'connect', from: 'peer-uuid', fromUsername: 'bruno'});
+
+        expect(jest.getTimerCount()).toBeGreaterThan(0);
+        panel.cleanupConnection();
+
+        expect(panel.pendingPeerTimers.size).toBe(0);
+        expect(jest.getTimerCount()).toBe(0);
     });
 
     test('continues cleanup when the swarm omits its close callback', () => {

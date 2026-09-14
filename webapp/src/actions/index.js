@@ -5,7 +5,6 @@
 import axios from 'axios';
 import swarm from 'webrtc-swarm';
 
-import {getConfig} from 'mattermost-redux/selectors/entities/general';
 import {getCurrentUser, getUser} from 'mattermost-redux/selectors/entities/users';
 
 import {id as pluginId} from 'manifest';
@@ -14,7 +13,7 @@ import ActionTypes from '../action_types';
 
 import debug from '../utils/debug';
 import {buildIceServers} from '../utils/iceServers';
-import pluginSignalHub from '../utils/pluginSignalHub';
+import {authorizedSignalHub, authorizedSignalInbox, createAuthorizedSignalHub, sendAuthorizedSignalInvite} from '../utils/pluginSignalHub';
 import {getDirectChannelIdForPeer, ensureDirectChannelId} from '../utils/dmChannel';
 import {createVideoInvitePost, sendCallDeclinedEphemeral, newCallId} from '../utils/callInvitePosts';
 import {startIncomingRing, startOutgoingRingback, stopIncomingRing, stopOutgoingRingback} from '../utils/callRing';
@@ -22,6 +21,7 @@ import {notifyIncomingCall} from '../utils/callBrowserNotify';
 import {attachOutgoingDeclineListener, clearOutgoingDeclineListener} from '../utils/outgoingDeclineListen';
 import {attachIncomingCancelListener, clearIncomingCancelListener} from '../utils/incomingCancelListen';
 import {watchPeerConnection} from '../utils/peerConnectionWatch';
+import {deliverAuthorizedCallInvite} from '../utils/authorizedCallInvite';
 
 let gStream;
 let cPeer;
@@ -136,27 +136,22 @@ function callerDisplayName(user) {
     return n || user.username || 'Someone';
 }
 
-function parseIncomingCallSignal(raw) {
-    if (raw == null) {
+export function parseAuthorizedCallInvite(raw) {
+    if (!raw || typeof raw !== 'object' || raw.version !== 1 || raw.type !== 'invite' || !raw.senderId || !raw.sessionId || !raw.callId) {
         return null;
     }
-    if (typeof raw === 'string') {
-        return {callerId: raw, callId: null, audioOnly: false};
-    }
-    if (typeof raw === 'object' && raw.callerId) {
-        return {
-            callerId: raw.callerId,
-            callId: raw.callId || null,
-            audioOnly: Boolean(raw.audioOnly),
-        };
-    }
-    return null;
+    const payload = raw.payload || {};
+    return {
+        callerId: raw.senderId,
+        callId: raw.callId,
+        audioOnly: Boolean(payload.audioOnly),
+        signalSessionId: raw.sessionId,
+    };
 }
 
 export function makeVideoCall(peerId, {audioOnly = false} = {}) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
-        const config = getConfig(getState());
         const {configLoaded, callIncoming, callOutgoing} = pluginState(getState);
 
         if (!configLoaded) {
@@ -190,8 +185,6 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
         }
 
         const callId = newCallId();
-        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${peerId}`));
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
 
         dispatch({
             type: ActionTypes.MAKE_VIDEO_CALL,
@@ -204,15 +197,6 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
 
         startOutgoingRingback();
 
-        listenAccept(user.id, peerId)(dispatch, getState);
-
-        attachOutgoingDeclineListener(accepthub, user.id, peerId, () => {
-            clearOutgoingDeclineListener();
-            stopOutgoingRingback();
-            releaseCallResources();
-            dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
-        });
-
         (async () => {
             try {
                 let channelId = getDirectChannelIdForPeer(getState(), user.id, peerId);
@@ -223,13 +207,48 @@ export function makeVideoCall(peerId, {audioOnly = false} = {}) {
             } catch (e) {
                 debug('Video call invite post failed (call signalling still proceeds)', e);
             }
-            debug(`calling ${peerId} (${callId})`);
-            callhub.broadcast(`call-${peerId}`, {callerId: user.id, callId, audioOnly});
+
+            try {
+                await deliverAuthorizedCallInvite({
+                    callId,
+                    peerId,
+                    audioOnly,
+                    createHub: async (nextCallId, participants) => trackHub(await createAuthorizedSignalHub(nextCallId, participants)),
+                    sendInvite: sendAuthorizedSignalInvite,
+                    onHub: (authorizedHub) => {
+                        const current = pluginState(getState);
+                        if (!current.callOutgoing || current.activeCallId !== callId) {
+                            throw new Error('Call ended before authorized signalling was ready');
+                        }
+
+                        dispatch({
+                            type: ActionTypes.SIGNAL_SESSION_READY,
+                            data: {signalSessionId: authorizedHub.session.sessionId},
+                        });
+                        listenAccept(user.id, peerId, authorizedHub)(dispatch, getState);
+                        attachOutgoingDeclineListener(authorizedHub, user.id, peerId, () => {
+                            clearOutgoingDeclineListener();
+                            stopOutgoingRingback();
+                            releaseCallResources();
+                            dispatch({type: ActionTypes.OUTGOING_CALL_DECLINED});
+                        });
+                    },
+                });
+                debug(`calling ${peerId} (${callId})`);
+            } catch (error) {
+                debug('Authorized call session could not be created', error);
+                const current = pluginState(getState);
+                if (current.callOutgoing && current.activeCallId === callId) {
+                    stopOutgoingRingback();
+                    releaseCallResources();
+                    dispatch({type: ActionTypes.END_CALL});
+                }
+            }
         })();
     };
 }
 
-export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
+export function receiveVideoCall(peerId, callId = null, audioOnly = false, signalSessionId = null) {
     return (dispatch, getState) => {
         const user = getCurrentUser(getState());
         const {callIncoming, callOutgoing} = pluginState(getState);
@@ -257,17 +276,22 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
             return;
         }
 
+        if (!signalSessionId || !callId) {
+            debug('Ignoring incoming call without an authorized signal session');
+            return;
+        }
+
         dispatch({
             type: ActionTypes.RECEIVE_VIDEO_CALL,
             data: {
                 peerId,
                 callId,
                 audioOnly,
+                signalSessionId,
             },
         });
 
-        const config = getConfig(getState());
-        const cancelhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+        const cancelhub = trackHub(authorizedSignalHub({version: 1, sessionId: signalSessionId, callId}));
         attachIncomingCancelListener(cancelhub, user.id, peerId, callId, () => {
             debug(`call from ${peerId} was cancelled`);
             endCall()(dispatch, getState);
@@ -281,7 +305,6 @@ export function receiveVideoCall(peerId, callId = null, audioOnly = false) {
 
 export function listenVideoCall() {
     return (dispatch, getState) => {
-        const config = getConfig(getState());
         const {configLoaded, callListening} = pluginState(getState);
 
         if (!configLoaded) {
@@ -298,17 +321,17 @@ export function listenVideoCall() {
             return;
         }
 
-        const callhub = pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`);
-
-        debug(`listening for calls for ${user.id}`);
-        callhub.subscribe(`call-${user.id}`).on('data', (raw) => {
-            const parsed = parseIncomingCallSignal(raw);
-            if (!parsed) {
+        const inbox = authorizedSignalInbox();
+        inbox.on('data', (raw) => {
+            const invite = parseAuthorizedCallInvite(raw);
+            if (!invite) {
                 return;
             }
-            debug(`call from ${parsed.callerId}`, parsed.callId);
-            receiveVideoCall(parsed.callerId, parsed.callId, parsed.audioOnly)(dispatch, getState);
+            debug(`authorized call from ${invite.callerId}`, invite.callId);
+            receiveVideoCall(invite.callerId, invite.callId, invite.audioOnly, invite.signalSessionId)(dispatch, getState);
         });
+
+        debug(`listening for authorized calls for ${user.id}`);
 
         dispatch({
             type: ActionTypes.LISTEN_VIDEO_CALL,
@@ -316,22 +339,22 @@ export function listenVideoCall() {
     };
 }
 
-function listenAccept(userId, peerId) {
+function listenAccept(userId, peerId, authorizedHub) {
     return (dispatch, getState) => {
-        const config = getConfig(getState());
         const user = getUser(getState(), userId);
         const {configLoaded, callPeerId} = pluginState(getState);
 
-        if (!configLoaded || !user) {
+        if (!configLoaded || !user || !authorizedHub) {
             return;
         }
 
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+        const accepthub = authorizedHub;
         accepthub.subscribe('all').on('data', () => {
             debug('received call hub event');
         });
 
-        accepthub.subscribe(`accept-${peerId}`).on('data', (acceptedUserId) => {
+        accepthub.subscribe(`accept-${peerId}`).on('data', (accepted) => {
+            const acceptedUserId = accepted && accepted.type === 'accept' ? accepted.userId : null;
             const {peerAccepted} = pluginState(getState);
             if (acceptedUserId !== userId) {
                 return;
@@ -345,7 +368,7 @@ function listenAccept(userId, peerId) {
 
             const iceServers = buildIceServers(stun2, turn2, tu2, tc2);
 
-            const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${callPeerId}`));
+            const callhub = authorizedHub;
             const sw = trackSwarm(swarm(
                 callhub,
                 {
@@ -467,24 +490,30 @@ export function acceptCall() {
         stopIncomingRing();
         clearIncomingCancelListener();
         const user = getCurrentUser(getState());
-        const config = getConfig(getState());
-        const {callPeerId, peerAccepted} = pluginState(getState);
+        const {callPeerId, peerAccepted, activeSignalSessionId, activeCallId} = pluginState(getState);
 
         if (!user || !user.id) {
             return;
         }
 
-        const accepthub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
+        if (!activeSignalSessionId || !activeCallId) {
+            debug('Cannot accept a call without an authorized signal session');
+            dispatch({type: ActionTypes.END_CALL});
+            return;
+        }
+
+        const authorizedHub = trackHub(authorizedSignalHub({version: 1, sessionId: activeSignalSessionId, callId: activeCallId}));
+        const accepthub = authorizedHub;
         accepthub.subscribe('all').on('data', () => {
             debug('received call hub event');
         });
-        accepthub.broadcast(`accept-${user.id}`, callPeerId);
+        accepthub.broadcast(`accept-${user.id}`, {type: 'accept', userId: user.id});
         debug('acceptCall', peerAccepted);
         const {stunServer, turnServer, turnServerUsername, turnServerCredential} = pluginState(getState);
 
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        const callhub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}-call-${user.id}`));
+        const callhub = authorizedHub;
         const sw = trackSwarm(swarm(
             callhub,
             {
@@ -603,12 +632,10 @@ export function rejectCall() {
         const user = getCurrentUser(getState());
 
         if (state.callIncoming && state.callPeerId && user && user.id) {
-            const config = getConfig(getState());
-            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-            hub.broadcast(`decline-${state.callPeerId}`, {
-                calleeId: user.id,
-                callId: state.activeCallId,
-            });
+            if (state.activeSignalSessionId && state.activeCallId) {
+                const hub = trackHub(authorizedSignalHub({version: 1, sessionId: state.activeSignalSessionId, callId: state.activeCallId}));
+                hub.broadcast(`decline-${state.callPeerId}`, {fromUserId: user.id});
+            }
 
             (async () => {
                 let channelId = getDirectChannelIdForPeer(getState(), user.id, state.callPeerId);
@@ -645,12 +672,10 @@ export function endCall() {
          * Once the peers are connected the data channel closing tells them.
          */
         if (state.callOutgoing && !state.peerAccepted && state.callPeerId && user && user.id) {
-            const config = getConfig(getState());
-            const hub = trackHub(pluginSignalHub(`mattermost-webrtc-video-${config.DiagnosticId}`));
-            hub.broadcast(`cancel-${state.callPeerId}`, {
-                callerId: user.id,
-                callId: state.activeCallId,
-            });
+            if (state.activeSignalSessionId && state.activeCallId) {
+                const hub = trackHub(authorizedSignalHub({version: 1, sessionId: state.activeSignalSessionId, callId: state.activeCallId}));
+                hub.broadcast(`cancel-${state.callPeerId}`, {fromUserId: user.id, callId: state.activeCallId});
+            }
         }
 
         if (gStream) {

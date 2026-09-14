@@ -8,7 +8,7 @@ import PropTypes from 'prop-types';
 import swarm from 'webrtc-swarm';
 
 import {VOICE_INVITE_ACCEPTED, VOICE_INVITE_DECLINED} from '../../../constants/voiceInvite';
-import pluginSignalHub from '../../../utils/pluginSignalHub';
+import {createAuthorizedSignalHub} from '../../../utils/pluginSignalHub';
 import {buildIceServers} from '../../../utils/iceServers';
 import debug from '../../../utils/debug';
 import {userDisplayName} from '../../../utils/dmPickerPeers';
@@ -34,6 +34,40 @@ export const SWARM_CLOSE_TIMEOUT_MS = 2000;
 
 function genRoomId() {
     return `vr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function validHubConnectMessage(message, ownID) {
+    return Boolean(
+        message &&
+        typeof message === 'object' &&
+        !Array.isArray(message) &&
+        message.type === 'connect' &&
+        typeof message.from === 'string' &&
+        message.from !== ownID &&
+        typeof message.fromUsername === 'string' &&
+        message.fromUsername,
+    );
+}
+
+function parseVoicePeerData(payload) {
+    try {
+        const data = JSON.parse(payload.toString());
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return null;
+        }
+        if (data.type === 'receivedHandshake') {
+            return data;
+        }
+        if (data.type === 'sendHandshake' && typeof data.userId === 'string' && data.userId) {
+            return data;
+        }
+        if ((data.type === 'audioToggle' || data.type === 'videoToggle') && typeof data.enabled === 'boolean') {
+            return data;
+        }
+    } catch (error) {
+        debug('Ignoring invalid voice peer payload', error);
+    }
+    return null;
 }
 
 async function getMediaStream(opts) {
@@ -144,6 +178,10 @@ export class AudioCallPanel extends React.Component {
         this.presenceHeartbeat = null;
         this.currentMyStream = null;
         this.connectPending = false;
+        this.mediaRequestPending = false;
+        this.cleanupInProgress = false;
+        this.cleanupCallbacks = [];
+        this.pendingPeerTimers = new Set();
         this.roomTransitionId = 0;
         this.isUnmounted = false;
         this.unsubscribeDirectoryEvents = null;
@@ -166,6 +204,20 @@ export class AudioCallPanel extends React.Component {
 
     componentDidUpdate() {
         this.syncInvitePickerOutsideListener();
+        this.reconcileVoiceConnection();
+    }
+
+    reconcileVoiceConnection() {
+        const {activeRoom, audioOn, initialized, swarmInitialized} = this.state;
+
+        if (activeRoom && audioOn && !initialized && !this.mediaRequestPending) {
+            this.handleRequestPerms();
+            return;
+        }
+
+        if (activeRoom && initialized && !swarmInitialized && !this.connectPending && !this.swarmInstance) {
+            this.connectToSwarm();
+        }
     }
 
     componentWillUnmount() {
@@ -730,6 +782,13 @@ export class AudioCallPanel extends React.Component {
         const onFinished = typeof done === 'function' ? done : function noopCallback() {
             /* optional async completion */
         };
+        if (this.cleanupInProgress) {
+            this.cleanupCallbacks.push(onFinished);
+            return;
+        }
+
+        this.cleanupInProgress = true;
+        this.cleanupCallbacks = [onFinished];
         let finished = false;
         let closeFallback = null;
         const finish = () => {
@@ -741,8 +800,22 @@ export class AudioCallPanel extends React.Component {
                 clearTimeout(closeFallback);
                 closeFallback = null;
             }
-            onFinished();
+            this.cleanupInProgress = false;
+            const callbacks = this.cleanupCallbacks;
+            this.cleanupCallbacks = [];
+            callbacks.forEach((callback) => {
+                try {
+                    callback();
+                } catch (error) {
+                    debug('voice cleanup callback failed', error);
+                }
+            });
         };
+
+        const pendingPeerTimers = this.pendingPeerTimers || new Set();
+        this.pendingPeerTimers = pendingPeerTimers;
+        pendingPeerTimers.forEach((timer) => clearTimeout(timer));
+        pendingPeerTimers.clear();
 
         Object.values(this.state.playBacks || {}).forEach((aud) => {
             try {
@@ -954,17 +1027,43 @@ export class AudioCallPanel extends React.Component {
     };
 
     async handleRequestPerms() {
-        const {myStream, audioEnabled, videoEnabled} = await getMyStream();
-        debug({audioEnabled, videoEnabled});
-        this.currentMyStream = myStream;
-        this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
-            if (this.state.activeRoom) {
-                this.announcePresence(this.state.activeRoom.roomId);
+        if (this.mediaRequestPending) {
+            return;
+        }
+
+        const activeRoom = this.state.activeRoom;
+        if (!activeRoom || !this.state.audioOn) {
+            return;
+        }
+
+        const requestedRoomID = activeRoom.roomId;
+        this.mediaRequestPending = true;
+        try {
+            const {myStream, audioEnabled, videoEnabled} = await getMyStream();
+            const stillInRequestedRoom = !this.isUnmounted && this.state.activeRoom &&
+                this.state.activeRoom.roomId === requestedRoomID && this.state.audioOn;
+            if (!stillInRequestedRoom) {
+                if (myStream) {
+                    myStream.getTracks().forEach((track) => track.stop());
+                }
+                return;
             }
-        });
+
+            debug({audioEnabled, videoEnabled});
+            this.currentMyStream = myStream;
+            this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
+                if (this.state.activeRoom && this.state.activeRoom.roomId === requestedRoomID) {
+                    this.announcePresence(requestedRoomID);
+                }
+            });
+        } catch (error) {
+            debug('Could not acquire voice media', error);
+        } finally {
+            this.mediaRequestPending = false;
+        }
     }
 
-    connectToSwarm(userId) {
+    async connectToSwarm() {
         const {activeRoom} = this.state;
         const {
             stunServer,
@@ -988,79 +1087,88 @@ export class AudioCallPanel extends React.Component {
         const myUuid = this.props.userId;
         const myUsername = this.props.username;
         const myDisplayName = this.props.displayName;
-        const voiceHubName = `mattermost-webrtc-video-${config.DiagnosticId}-voice-${activeRoom.roomId}`;
-        debug('Voice hub', voiceHubName);
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
-        const hub = pluginSignalHub(voiceHubName);
-        hub.subscribe('all').on('data', this.handleHubData.bind(this));
+        try {
+            const hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
+            if (!this.state.activeRoom || this.state.activeRoom.roomId !== activeRoom.roomId) {
+                hub.close();
+                return;
+            }
 
-        const sw = swarm(
-            hub,
-            {
-                config: {iceServers},
-                uuid: myUuid,
-                wrap: (outgoingSignalingData) => {
-                    outgoingSignalingData.fromUserId = userId;
-                    outgoingSignalingData.fromUsername = myUsername;
-                    outgoingSignalingData.fromDisplayName = myDisplayName;
-                    return outgoingSignalingData;
+            hub.subscribe('all').on('data', this.handleHubData.bind(this));
+
+            const sw = swarm(
+                hub,
+                {
+                    config: {iceServers},
+                    uuid: myUuid,
+                    wrap: (outgoingSignalingData) => {
+                        outgoingSignalingData.fromUserId = myUuid;
+                        outgoingSignalingData.fromUsername = myUsername;
+                        outgoingSignalingData.fromDisplayName = myDisplayName;
+                        return outgoingSignalingData;
+                    },
                 },
-            },
-        );
+            );
 
-        this.swarmInstance = sw;
-        this.connectPending = false;
+            this.swarmInstance = sw;
+            sw.on('peer', this.handleConnect.bind(this));
+            sw.on('disconnect', this.handleDisconnect.bind(this));
 
-        sw.on('peer', this.handleConnect.bind(this));
-        sw.on('disconnect', this.handleDisconnect.bind(this));
-
-        hub.broadcast('all', {
-            type: 'connect',
-            from: myUuid,
-            fromUserId: userId,
-            fromUsername: myUsername,
-            fromDisplayName: myDisplayName,
-        });
+            hub.broadcast('all', {
+                type: 'connect', from: myUuid, fromUserId: myUuid, fromUsername: myUsername, fromDisplayName: myDisplayName,
+            });
+        } catch (err) {
+            debug('Authorized voice session failed', err);
+        } finally {
+            this.connectPending = false;
+        }
     }
 
     handleHubData(message) {
         const {swarmInitialized, peerStreams} = this.state;
         const myUuid = this.props.userId;
 
+        if (!validHubConnectMessage(message, myUuid)) {
+            debug('Ignoring invalid voice hub message');
+            return;
+        }
+
         if (!swarmInitialized) {
             this.setState({swarmInitialized: true});
         }
-        debug('voice hub message received', {type: message && message.type});
-        if (message.type === 'connect' && message.from !== myUuid) {
-            if (!peerStreams[message.from] && message.fromUsername) {
-                debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
+        debug('voice hub message received', {type: message.type});
+        if (!peerStreams[message.from]) {
+            debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
 
-                const newPeerStreams = Object.assign({}, peerStreams);
-                newPeerStreams[message.from] = {
-                    userId: message.fromUserId,
-                    username: message.fromUsername,
-                    displayName: message.fromDisplayName,
-                };
-                this.setState({peerStreams: newPeerStreams});
+            const newPeerStreams = Object.assign({}, peerStreams);
+            newPeerStreams[message.from] = {
+                userId: message.fromUserId,
+                username: message.fromUsername,
+                displayName: message.fromDisplayName,
+            };
+            this.setState({peerStreams: newPeerStreams});
 
-                setTimeout(() => {
-                    this.setState((prev) => {
-                        const ps = prev.peerStreams;
-                        if (ps[message.from] && !ps[message.from].connected) {
-                            const next = Object.assign({}, ps);
-                            delete next[message.from];
-                            return {peerStreams: next};
-                        }
-                        return null;
-                    });
-                }, 20000);
-            }
+            const timeout = setTimeout(() => {
+                this.pendingPeerTimers.delete(timeout);
+                this.setState((prev) => {
+                    const ps = prev.peerStreams;
+                    if (ps[message.from] && !ps[message.from].connected) {
+                        const next = Object.assign({}, ps);
+                        delete next[message.from];
+                        return {peerStreams: next};
+                    }
+                    return null;
+                });
+            }, 20000);
+            this.pendingPeerTimers.add(timeout);
         }
     }
 
     handleConnect(peer, id) {
-        const {userId, audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
+        const {audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
+        const {userId} = this.props;
 
         debug('connected to a new voice peer:', id);
 
@@ -1088,7 +1196,10 @@ export class AudioCallPanel extends React.Component {
         });
 
         peer.on('data', (payload) => {
-            const data = JSON.parse(payload.toString());
+            const data = parseVoicePeerData(payload);
+            if (!data) {
+                return;
+            }
 
             debug('received voice peer data', {id, type: data.type});
 
@@ -1458,10 +1569,8 @@ export class AudioCallPanel extends React.Component {
 
     render() {
         const {
-            userId,
             initialized,
             swarmInitialized,
-            audioOn,
             audioEnabled,
             activeRoom,
             channelList,
@@ -1485,14 +1594,6 @@ export class AudioCallPanel extends React.Component {
         let connectionHint = '';
         if (!swarmInitialized) {
             connectionHint = initialized && !audioEnabled ? 'No microphone available — you can listen, but not speak.' : 'Connecting…';
-        }
-
-        if (activeRoom && audioOn && !initialized) {
-            this.handleRequestPerms();
-        }
-
-        if (activeRoom && initialized && !swarmInitialized && !this.connectPending && !this.swarmInstance) {
-            this.connectToSwarm(userId);
         }
 
         return (

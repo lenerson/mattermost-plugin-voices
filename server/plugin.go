@@ -23,6 +23,16 @@ type Plugin struct {
 
 	signalOnce sync.Once
 	signal     *signalBroker
+
+	signalSessionsOnce sync.Once
+	signalSessions     *signalSessionStore
+	signalLimitsOnce   sync.Once
+	signalLimits       *signalLimiter
+}
+
+func (p *Plugin) getSignalLimits() *signalLimiter {
+	p.signalLimitsOnce.Do(func() { p.signalLimits = newSignalLimiter() })
+	return p.signalLimits
 }
 
 func (p *Plugin) getSignal() *signalBroker {
@@ -32,8 +42,19 @@ func (p *Plugin) getSignal() *signalBroker {
 	return p.signal
 }
 
+func (p *Plugin) getSignalSessions() *signalSessionStore {
+	p.signalSessionsOnce.Do(func() {
+		p.signalSessions = newSignalSessionStore()
+	})
+	return p.signalSessions
+}
+
 // ServeHTTP handles HTTP requests.
 func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/signal/sessions/") {
+		p.handleSignalSessionClose(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/v1/config":
 		p.handleConfig(w, r)
@@ -49,6 +70,10 @@ func (p *Plugin) ServeHTTP(c *plugin.Context, w http.ResponseWriter, r *http.Req
 		p.handleSignalPublish(w, r)
 	case "/v1/signal/stream":
 		p.handleSignalStream(w, r)
+	case "/v1/signal/sessions":
+		p.handleSignalSessionCreate(w, r)
+	case "/v1/signal/invite":
+		p.handleSignalInvite(w, r)
 	default:
 		http.NotFound(w, r)
 	}

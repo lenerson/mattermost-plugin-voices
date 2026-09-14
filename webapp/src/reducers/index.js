@@ -163,6 +163,22 @@ const activeCallId = (state = null, action) => {
     }
 };
 
+const activeSignalSessionId = (state = null, action) => {
+    switch (action.type) {
+    case ActionTypes.SIGNAL_SESSION_READY:
+        return action.data && action.data.signalSessionId;
+    case ActionTypes.MAKE_VIDEO_CALL:
+    case ActionTypes.RECEIVE_VIDEO_CALL:
+        return (action.data && action.data.signalSessionId) || null;
+    case ActionTypes.REJECT_CALL:
+    case ActionTypes.END_CALL:
+    case ActionTypes.OUTGOING_CALL_DECLINED:
+        return null;
+    default:
+        return state;
+    }
+};
+
 const outgoingCallDeclined = (state = false, action) => {
     switch (action.type) {
     case ActionTypes.OUTGOING_CALL_DECLINED:
@@ -325,6 +341,7 @@ export default combineReducers({
     peerAccepted,
     callPeerId,
     activeCallId,
+    activeSignalSessionId,
     outgoingCallDeclined,
     callPeerStream,
     callPeerVideoOn,

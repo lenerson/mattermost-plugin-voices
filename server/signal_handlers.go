@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
-const maxSignalTopicLen = 1024
+const (
+	maxSignalRequestBodyBytes = 64 * 1024
+)
 
 /*
  * How often to send an SSE comment frame on an otherwise silent stream.
@@ -28,24 +31,47 @@ func (p *Plugin) handleSignalPublish(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
 		return
 	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
 	var body struct {
-		Topic   string          `json:"topic"`
-		Payload json.RawMessage `json:"payload"`
+		Version   int             `json:"version"`
+		SessionID string          `json:"sessionId"`
+		CallID    string          `json:"callId"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if body.Topic == "" || len(body.Topic) > maxSignalTopicLen {
-		http.Error(w, "invalid topic", http.StatusBadRequest)
+
+	envelope := signalEnvelope{
+		Version:   body.Version,
+		SessionID: body.SessionID,
+		CallID:    body.CallID,
+		Type:      body.Type,
+		SenderID:  r.Header.Get("Mattermost-User-Id"),
+		Payload:   body.Payload,
+	}
+	if !isValidSignalEnvelope(envelope) {
+		http.Error(w, "invalid signal envelope", http.StatusBadRequest)
 		return
 	}
-	if len(body.Payload) == 0 {
-		body.Payload = []byte("{}")
+	if err := p.getSignalSessions().authorize(envelope.SessionID, envelope.CallID, envelope.SenderID); err != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
+		return
 	}
 
-	p.getSignal().publish(body.Topic, body.Payload)
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		http.Error(w, "could not encode signal envelope", http.StatusInternalServerError)
+		return
+	}
+	p.getSignal().publish(signalSessionTopic(envelope.SessionID), encoded)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -58,9 +84,28 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
 		return
 	}
-	topic := r.URL.Query().Get("topic")
-	if topic == "" || len(topic) > maxSignalTopicLen {
-		http.Error(w, "invalid topic", http.StatusBadRequest)
+	userID := r.Header.Get("Mattermost-User-Id")
+	if !p.getSignalLimits().acquireSubscription(userID) {
+		http.Error(w, "signal subscription limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+	defer p.getSignalLimits().releaseSubscription(userID)
+	var topic string
+	sessionID := r.URL.Query().Get("sessionId")
+	if r.URL.Query().Get("inbox") == "true" {
+		if r.URL.Query().Get("topic") != "" || sessionID != "" {
+			http.Error(w, "invalid signal inbox", http.StatusBadRequest)
+			return
+		}
+		topic = signalInboxTopic(r.Header.Get("Mattermost-User-Id"))
+	} else if sessionID != "" {
+		if r.URL.Query().Get("topic") != "" || p.getSignalSessions().authorize(sessionID, "", r.Header.Get("Mattermost-User-Id")) != nil {
+			http.Error(w, "signal session access denied", http.StatusForbidden)
+			return
+		}
+		topic = signalSessionTopic(sessionID)
+	} else {
+		http.Error(w, "signal session is required", http.StatusBadRequest)
 		return
 	}
 
@@ -103,4 +148,149 @@ func (p *Plugin) handleSignalStream(w http.ResponseWriter, r *http.Request) {
 			fl.Flush()
 		}
 	}
+}
+
+// handleSignalInvite delivers a session invitation through the target user's
+// private inbox. Both sender and target must already belong to the session.
+func (p *Plugin) handleSignalInvite(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	var body struct {
+		SessionID string          `json:"sessionId"`
+		CallID    string          `json:"callId"`
+		TargetID  string          `json:"targetId"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.TargetID) == "" || !json.Valid(body.Payload) {
+		http.Error(w, "invalid signal invite", http.StatusBadRequest)
+		return
+	}
+	senderID := r.Header.Get("Mattermost-User-Id")
+	if p.getSignalSessions().authorize(body.SessionID, body.CallID, senderID) != nil || p.getSignalSessions().authorize(body.SessionID, body.CallID, body.TargetID) != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
+		return
+	}
+
+	encoded, err := json.Marshal(signalEnvelope{Version: signalProtocolVersion, SessionID: body.SessionID, CallID: body.CallID, Type: "invite", SenderID: senderID, Payload: body.Payload})
+	if err != nil {
+		http.Error(w, "could not encode signal invite", http.StatusInternalServerError)
+		return
+	}
+	p.getSignal().publish(signalInboxTopic(body.TargetID), encoded)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (p *Plugin) handleSignalSessionCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+	if !p.getSignalLimits().allowRequest(r.Header.Get("Mattermost-User-Id")) {
+		http.Error(w, "signal rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSignalRequestBodyBytes)
+	var body struct {
+		CallID       string   `json:"callId"`
+		Participants []string `json:"participants"`
+		RoomID       string   `json:"roomId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	ownerID := r.Header.Get("Mattermost-User-Id")
+	participants := body.Participants
+	var err error
+	if body.RoomID != "" {
+		participants, err = p.activeVoiceRoomParticipants(body.RoomID)
+		if err != nil {
+			http.Error(w, "could not read voice presence", http.StatusInternalServerError)
+			return
+		}
+		found := false
+		for _, participantID := range participants {
+			if participantID == ownerID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "voice room access denied", http.StatusForbidden)
+			return
+		}
+	}
+
+	var session signalSession
+	if body.RoomID != "" {
+		session, err = p.getSignalSessions().forVoiceRoom(ownerID, body.RoomID, body.CallID, participants)
+	} else {
+		session, err = p.getSignalSessions().create(ownerID, body.CallID, participants)
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if err == errInvalidSignalSession {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		Version   int    `json:"version"`
+		SessionID string `json:"sessionId"`
+		CallID    string `json:"callId"`
+	}{
+		Version:   signalProtocolVersion,
+		SessionID: session.ID,
+		CallID:    session.CallID,
+	})
+}
+
+func (p *Plugin) handleSignalSessionClose(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !p.isUserAuthenticated(r) {
+		http.Error(w, "not authenticated", http.StatusForbidden)
+		return
+	}
+	sessionID := strings.TrimPrefix(r.URL.Path, "/v1/signal/sessions/")
+	if sessionID == "" || strings.Contains(sessionID, "/") {
+		http.Error(w, "invalid signal session", http.StatusBadRequest)
+		return
+	}
+	if err := p.getSignalSessions().close(sessionID, r.Header.Get("Mattermost-User-Id")); err != nil {
+		http.Error(w, "signal session access denied", http.StatusForbidden)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func isValidSignalEnvelope(envelope signalEnvelope) bool {
+	return envelope.Version == signalProtocolVersion &&
+		strings.TrimSpace(envelope.SessionID) != "" &&
+		strings.TrimSpace(envelope.CallID) != "" && len(envelope.CallID) <= maxSignalCallIDLen &&
+		strings.TrimSpace(envelope.Type) != "" && len(envelope.Type) <= maxSignalMessageTypeLen &&
+		len(envelope.Payload) > 0 && json.Valid(envelope.Payload)
 }

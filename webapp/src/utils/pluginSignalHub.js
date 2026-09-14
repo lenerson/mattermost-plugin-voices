@@ -1,7 +1,6 @@
 /**
- * Hub compatible with webrtc-swarm / signalhub: subscribe(channel) returns a Readable stream
- * with .pipe(), .on('open'), .once('open'); broadcast(channel, message, cb); close(cb).
- * Uses plugin POST /v1/signal/publish and GET /v1/signal/stream (SSE).
+ * Session hubs provide the small signalhub-compatible surface required by
+ * webrtc-swarm, backed exclusively by an authenticated server session.
  */
 import axios from 'axios';
 import {Readable} from 'stream';
@@ -43,8 +42,9 @@ function noop() {
     /* default callback */
 }
 
-function createSubscribeStream(topic) {
-    const url = `/plugins/${pluginId}/v1/signal/stream?topic=${encodeURIComponent(topic)}`;
+function createSubscribeStream(sessionId = '', inbox = false) {
+    const query = inbox ? 'inbox=true' : `sessionId=${encodeURIComponent(sessionId)}`;
+    const url = `/plugins/${pluginId}/v1/signal/stream?${query}`;
     const es = new EventSource(url);
 
     const stream = new Readable({
@@ -69,10 +69,22 @@ function createSubscribeStream(topic) {
     es.onmessage = (ev) => {
         try {
             const data = JSON.parse(ev.data);
+            let message = data;
+            if (sessionId) {
+                if (data.version !== 1 || !data.senderId || !data.payload) {
+                    throw new Error('Invalid authorized signal envelope');
+                }
+                message = data.payload;
+                if (message && typeof message === 'object' && !Array.isArray(message)) {
+                    // The outer envelope is authenticated by the server. Do
+                    // not let a WebRTC payload impersonate another peer.
+                    message = Object.assign({}, message, {fromUserId: data.senderId});
+                }
+            }
             if (!opened) {
                 fireOpen();
             }
-            stream.push(data);
+            stream.push(message);
         } catch (e) {
             stream.destroy(e);
         }
@@ -87,7 +99,7 @@ function createSubscribeStream(topic) {
          * stop being announced after the tab had been sitting there a while.
          */
         fireOpen();
-        debug(`[signal] stream interrupted on ${topic}; EventSource will retry`);
+        debug(`[signal] stream interrupted on ${sessionId || 'inbox'}; EventSource will retry`);
     };
 
     const origDestroy = stream.destroy.bind(stream);
@@ -101,24 +113,63 @@ function createSubscribeStream(topic) {
     return stream;
 }
 
-export default function pluginSignalHub(appName) {
+/**
+ * Creates a hub backed by a server-authorized signal session. Its public
+ * surface matches the part of signalhub used by webrtc-swarm.
+ */
+export async function createAuthorizedSignalHub(callId, participants, roomId = '') {
+    const request = {
+        callId,
+        participants,
+    };
+    if (roomId) {
+        request.roomId = roomId;
+    }
+    const response = await axios.post(`/plugins/${pluginId}/v1/signal/sessions`, request, {
+        headers: pluginCookieAuthHeaders(),
+        withCredentials: true,
+    });
+
+    const session = response.data || {};
+    if (session.version !== 1 || !session.sessionId || session.callId !== callId) {
+        throw new Error('Invalid authorized signal session response');
+    }
+
+    return authorizedSignalHub(session);
+}
+
+export function sendAuthorizedSignalInvite(session, targetId, payload) {
+    return axios.post(`/plugins/${pluginId}/v1/signal/invite`, {
+        sessionId: session.sessionId,
+        callId: session.callId,
+        targetId,
+        payload,
+    }, {
+        headers: pluginCookieAuthHeaders(),
+        withCredentials: true,
+    });
+}
+
+export function authorizedSignalHub(session) {
     const streams = [];
 
     const hub = {
-        app: appName,
+        app: `signal-session-${session.sessionId}`,
+        session,
 
-        subscribe(channel) {
-            const topic = `${appName}/${channel}`;
-            const s = createSubscribeStream(topic);
-            streams.push(s);
-            return s;
+        subscribe() {
+            const stream = createSubscribeStream(session.sessionId);
+            streams.push(stream);
+            return stream;
         },
 
-        broadcast(channel, message, cb) {
-            const topic = `${appName}/${channel}`;
+        broadcast(_channel, message, cb) {
             const done = typeof cb === 'function' ? cb : noop;
             axios.post(`/plugins/${pluginId}/v1/signal/publish`, {
-                topic,
+                version: session.version,
+                sessionId: session.sessionId,
+                callId: session.callId,
+                type: 'webrtc',
                 payload: message,
             }, {
                 headers: pluginCookieAuthHeaders(),
@@ -127,9 +178,9 @@ export default function pluginSignalHub(appName) {
         },
 
         close(cb) {
-            streams.forEach((s) => {
+            streams.forEach((stream) => {
                 try {
-                    s.destroy();
+                    stream.destroy();
                 } catch (e) {
                     // ignore
                 }
@@ -141,4 +192,10 @@ export default function pluginSignalHub(appName) {
     };
 
     return hub;
+}
+
+// The server derives the inbox identity from the authenticated Mattermost
+// request. The browser never supplies a user id or a topic for this stream.
+export function authorizedSignalInbox() {
+    return createSubscribeStream('', true);
 }
