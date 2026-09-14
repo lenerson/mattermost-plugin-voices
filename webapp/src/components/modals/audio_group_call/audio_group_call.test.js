@@ -439,6 +439,47 @@ describe('AudioCallPanel connection reconciliation', () => {
 
         expect(panel.connectToSwarm).not.toHaveBeenCalled();
     });
+
+    test('does not request media while an earlier request is pending', () => {
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true, initialized: false};
+        panel.mediaRequestPending = true;
+        panel.handleRequestPerms = jest.fn();
+
+        panel.reconcileVoiceConnection();
+
+        expect(panel.handleRequestPerms).not.toHaveBeenCalled();
+    });
+
+    test('stops media returned after the user has left the requested room', async () => {
+        let resolveMedia;
+        const pendingMedia = new Promise((resolve) => {
+            resolveMedia = resolve;
+        });
+        const originalMediaDevices = navigator.mediaDevices;
+        Object.defineProperty(navigator, 'mediaDevices', {
+            configurable: true,
+            value: {getUserMedia: jest.fn(() => pendingMedia)},
+        });
+        const track = {stop: jest.fn()};
+        const stream = {getTracks: () => [track]};
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, activeRoom: {roomId: 'room-1'}, audioOn: true};
+        applyStateSynchronously(panel);
+        panel.announcePresence = jest.fn();
+
+        const requesting = panel.handleRequestPerms();
+        panel.state.activeRoom = null;
+        resolveMedia(stream);
+        await requesting;
+
+        expect(track.stop).toHaveBeenCalledTimes(1);
+        expect(panel.currentMyStream).toBeNull();
+        expect(panel.state.initialized).toBe(false);
+        expect(panel.announcePresence).not.toHaveBeenCalled();
+        expect(panel.mediaRequestPending).toBe(false);
+        Object.defineProperty(navigator, 'mediaDevices', {configurable: true, value: originalMediaDevices});
+    });
 });
 
 describe('AudioCallPanel external signaling validation', () => {

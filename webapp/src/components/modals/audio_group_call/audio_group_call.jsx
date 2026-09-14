@@ -178,6 +178,7 @@ export class AudioCallPanel extends React.Component {
         this.presenceHeartbeat = null;
         this.currentMyStream = null;
         this.connectPending = false;
+        this.mediaRequestPending = false;
         this.cleanupInProgress = false;
         this.cleanupCallbacks = [];
         this.roomTransitionId = 0;
@@ -208,7 +209,7 @@ export class AudioCallPanel extends React.Component {
     reconcileVoiceConnection() {
         const {activeRoom, audioOn, initialized, swarmInitialized} = this.state;
 
-        if (activeRoom && audioOn && !initialized) {
+        if (activeRoom && audioOn && !initialized && !this.mediaRequestPending) {
             this.handleRequestPerms();
             return;
         }
@@ -1020,14 +1021,40 @@ export class AudioCallPanel extends React.Component {
     };
 
     async handleRequestPerms() {
-        const {myStream, audioEnabled, videoEnabled} = await getMyStream();
-        debug({audioEnabled, videoEnabled});
-        this.currentMyStream = myStream;
-        this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
-            if (this.state.activeRoom) {
-                this.announcePresence(this.state.activeRoom.roomId);
+        if (this.mediaRequestPending) {
+            return;
+        }
+
+        const activeRoom = this.state.activeRoom;
+        if (!activeRoom || !this.state.audioOn) {
+            return;
+        }
+
+        const requestedRoomID = activeRoom.roomId;
+        this.mediaRequestPending = true;
+        try {
+            const {myStream, audioEnabled, videoEnabled} = await getMyStream();
+            const stillInRequestedRoom = !this.isUnmounted && this.state.activeRoom &&
+                this.state.activeRoom.roomId === requestedRoomID && this.state.audioOn;
+            if (!stillInRequestedRoom) {
+                if (myStream) {
+                    myStream.getTracks().forEach((track) => track.stop());
+                }
+                return;
             }
-        });
+
+            debug({audioEnabled, videoEnabled});
+            this.currentMyStream = myStream;
+            this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
+                if (this.state.activeRoom && this.state.activeRoom.roomId === requestedRoomID) {
+                    this.announcePresence(requestedRoomID);
+                }
+            });
+        } catch (error) {
+            debug('Could not acquire voice media', error);
+        } finally {
+            this.mediaRequestPending = false;
+        }
     }
 
     async connectToSwarm() {
