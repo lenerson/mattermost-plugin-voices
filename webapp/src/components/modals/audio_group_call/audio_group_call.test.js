@@ -349,7 +349,7 @@ describe('AudioCallPanel authorized voice signaling', () => {
         swarm.mockReturnValue(swarmInstance);
         const panel = createPanel();
 
-        await panel.connectToSwarm('user-1');
+        await panel.connectToSwarm();
 
         expect(createAuthorizedSignalHub).toHaveBeenCalledWith('voice-room-1', [], 'room-1');
         expect(swarm).toHaveBeenCalledWith(hub, expect.objectContaining({uuid: 'user-1'}));
@@ -361,7 +361,7 @@ describe('AudioCallPanel authorized voice signaling', () => {
         createAuthorizedSignalHub.mockRejectedValue(new Error('session unavailable'));
         const panel = createPanel();
 
-        await panel.connectToSwarm('user-1');
+        await panel.connectToSwarm();
 
         expect(swarm).not.toHaveBeenCalled();
         expect(panel.swarmInstance).toBeUndefined();
@@ -377,7 +377,7 @@ describe('AudioCallPanel authorized voice signaling', () => {
         createAuthorizedSignalHub.mockReturnValue(pendingSession);
         const panel = createPanel();
 
-        const connecting = panel.connectToSwarm('user-1');
+        const connecting = panel.connectToSwarm();
         panel.state.activeRoom = {roomId: 'room-2', name: 'Planning'};
         resolveSession(hub);
         await connecting;
@@ -423,7 +423,7 @@ describe('AudioCallPanel connection reconciliation', () => {
         panel.componentDidUpdate();
 
         expect(panel.handleRequestPerms).toHaveBeenCalledTimes(1);
-        expect(panel.connectToSwarm).toHaveBeenCalledWith('user-1');
+        expect(panel.connectToSwarm).toHaveBeenCalledWith();
     });
 
     test('does not reconnect while a connection is pending or already active', () => {
@@ -511,6 +511,27 @@ describe('AudioCallPanel external signaling validation', () => {
         callbacks.data({toString: () => '{"type":"audioToggle","enabled":false}'});
 
         expect(panel.state.peerStreams['peer-uuid'].audioOn).toBe(false);
+    });
+
+    test('uses the authenticated prop identity for peer handshakes', () => {
+        const callbacks = {};
+        const peer = {
+            on: jest.fn((event, callback) => {
+                callbacks[event] = callback;
+            }),
+            send: jest.fn(),
+        };
+        const panel = new AudioCallPanel({userId: 'authenticated-user', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+        panel.state.userId = 'spoofed-state-user';
+
+        panel.handleConnect(peer, 'peer-uuid');
+
+        expect(peer.send).toHaveBeenCalledWith(JSON.stringify({
+            type: 'sendHandshake',
+            userId: 'authenticated-user',
+        }));
+        expect(peer.send).not.toHaveBeenCalledWith(expect.stringContaining('spoofed-state-user'));
     });
 });
 

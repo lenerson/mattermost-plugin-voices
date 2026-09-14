@@ -207,7 +207,6 @@ export class AudioCallPanel extends React.Component {
 
     reconcileVoiceConnection() {
         const {activeRoom, audioOn, initialized, swarmInitialized} = this.state;
-        const {userId} = this.props;
 
         if (activeRoom && audioOn && !initialized) {
             this.handleRequestPerms();
@@ -215,7 +214,7 @@ export class AudioCallPanel extends React.Component {
         }
 
         if (activeRoom && initialized && !swarmInitialized && !this.connectPending && !this.swarmInstance) {
-            this.connectToSwarm(userId);
+            this.connectToSwarm();
         }
     }
 
@@ -1031,7 +1030,7 @@ export class AudioCallPanel extends React.Component {
         });
     }
 
-    async connectToSwarm(userId) {
+    async connectToSwarm() {
         const {activeRoom} = this.state;
         const {
             stunServer,
@@ -1072,7 +1071,7 @@ export class AudioCallPanel extends React.Component {
                     config: {iceServers},
                     uuid: myUuid,
                     wrap: (outgoingSignalingData) => {
-                        outgoingSignalingData.fromUserId = userId;
+                        outgoingSignalingData.fromUserId = myUuid;
                         outgoingSignalingData.fromUsername = myUsername;
                         outgoingSignalingData.fromDisplayName = myDisplayName;
                         return outgoingSignalingData;
@@ -1085,7 +1084,7 @@ export class AudioCallPanel extends React.Component {
             sw.on('disconnect', this.handleDisconnect.bind(this));
 
             hub.broadcast('all', {
-                type: 'connect', from: myUuid, fromUserId: userId, fromUsername: myUsername, fromDisplayName: myDisplayName,
+                type: 'connect', from: myUuid, fromUserId: myUuid, fromUsername: myUsername, fromDisplayName: myDisplayName,
             });
         } catch (err) {
             debug('Authorized voice session failed', err);
@@ -1133,7 +1132,8 @@ export class AudioCallPanel extends React.Component {
     }
 
     handleConnect(peer, id) {
-        const {userId, audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
+        const {audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
+        const {userId} = this.props;
 
         debug('connected to a new voice peer:', id);
 
