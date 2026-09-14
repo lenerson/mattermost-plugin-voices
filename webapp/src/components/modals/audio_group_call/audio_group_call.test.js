@@ -441,6 +441,79 @@ describe('AudioCallPanel connection reconciliation', () => {
     });
 });
 
+describe('AudioCallPanel external signaling validation', () => {
+    test.each([null, {}, [], {type: 'connect'}, {type: 'connect', from: 'user-1', fromUsername: 'self'}])(
+        'ignores an invalid or self-originated hub message: %p',
+        (message) => {
+            const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+            applyStateSynchronously(panel);
+
+            panel.handleHubData(message);
+
+            expect(panel.state.swarmInitialized).toBe(false);
+            expect(panel.state.peerStreams).toEqual({});
+        },
+    );
+
+    test('accepts a valid hub connect message from another participant', () => {
+        jest.useFakeTimers();
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+
+        panel.handleHubData({
+            type: 'connect',
+            from: 'peer-uuid',
+            fromUserId: 'user-2',
+            fromUsername: 'bruno',
+            fromDisplayName: 'Bruno',
+        });
+
+        expect(panel.state.swarmInitialized).toBe(true);
+        expect(panel.state.peerStreams).toEqual({
+            'peer-uuid': {userId: 'user-2', username: 'bruno', displayName: 'Bruno'},
+        });
+        jest.clearAllTimers();
+        jest.useRealTimers();
+    });
+
+    test.each(['not json', '[]', '{"type":"audioToggle","enabled":"yes"}', '{"type":"sendHandshake"}'])(
+        'ignores an invalid peer payload: %s',
+        (raw) => {
+            const callbacks = {};
+            const peer = {
+                on: jest.fn((event, callback) => {
+                    callbacks[event] = callback;
+                }),
+                send: jest.fn(),
+            };
+            const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+            applyStateSynchronously(panel);
+
+            panel.handleConnect(peer, 'peer-uuid');
+            expect(() => callbacks.data({toString: () => raw})).not.toThrow();
+
+            expect(panel.state.peerStreams['peer-uuid']).toEqual(expect.objectContaining({audioOn: true, videoOn: false}));
+        },
+    );
+
+    test('applies a valid peer microphone update', () => {
+        const callbacks = {};
+        const peer = {
+            on: jest.fn((event, callback) => {
+                callbacks[event] = callback;
+            }),
+            send: jest.fn(),
+        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        applyStateSynchronously(panel);
+
+        panel.handleConnect(peer, 'peer-uuid');
+        callbacks.data({toString: () => '{"type":"audioToggle","enabled":false}'});
+
+        expect(panel.state.peerStreams['peer-uuid'].audioOn).toBe(false);
+    });
+});
+
 describe('AudioCallPanel voice invitations', () => {
     beforeEach(() => {
         sendVoiceRoomInvite.mockReset();

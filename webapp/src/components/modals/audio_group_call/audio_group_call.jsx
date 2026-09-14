@@ -36,6 +36,40 @@ function genRoomId() {
     return `vr-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function validHubConnectMessage(message, ownID) {
+    return Boolean(
+        message &&
+        typeof message === 'object' &&
+        !Array.isArray(message) &&
+        message.type === 'connect' &&
+        typeof message.from === 'string' &&
+        message.from !== ownID &&
+        typeof message.fromUsername === 'string' &&
+        message.fromUsername,
+    );
+}
+
+function parseVoicePeerData(payload) {
+    try {
+        const data = JSON.parse(payload.toString());
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return null;
+        }
+        if (data.type === 'receivedHandshake') {
+            return data;
+        }
+        if (data.type === 'sendHandshake' && typeof data.userId === 'string' && data.userId) {
+            return data;
+        }
+        if ((data.type === 'audioToggle' || data.type === 'videoToggle') && typeof data.enabled === 'boolean') {
+            return data;
+        }
+    } catch (error) {
+        debug('Ignoring invalid voice peer payload', error);
+    }
+    return null;
+}
+
 async function getMediaStream(opts) {
     return navigator.mediaDevices.getUserMedia(opts);
 }
@@ -1046,34 +1080,37 @@ export class AudioCallPanel extends React.Component {
         const {swarmInitialized, peerStreams} = this.state;
         const myUuid = this.props.userId;
 
+        if (!validHubConnectMessage(message, myUuid)) {
+            debug('Ignoring invalid voice hub message');
+            return;
+        }
+
         if (!swarmInitialized) {
             this.setState({swarmInitialized: true});
         }
-        debug('voice hub message received', {type: message && message.type});
-        if (message.type === 'connect' && message.from !== myUuid) {
-            if (!peerStreams[message.from] && message.fromUsername) {
-                debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
+        debug('voice hub message received', {type: message.type});
+        if (!peerStreams[message.from]) {
+            debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
 
-                const newPeerStreams = Object.assign({}, peerStreams);
-                newPeerStreams[message.from] = {
-                    userId: message.fromUserId,
-                    username: message.fromUsername,
-                    displayName: message.fromDisplayName,
-                };
-                this.setState({peerStreams: newPeerStreams});
+            const newPeerStreams = Object.assign({}, peerStreams);
+            newPeerStreams[message.from] = {
+                userId: message.fromUserId,
+                username: message.fromUsername,
+                displayName: message.fromDisplayName,
+            };
+            this.setState({peerStreams: newPeerStreams});
 
-                setTimeout(() => {
-                    this.setState((prev) => {
-                        const ps = prev.peerStreams;
-                        if (ps[message.from] && !ps[message.from].connected) {
-                            const next = Object.assign({}, ps);
-                            delete next[message.from];
-                            return {peerStreams: next};
-                        }
-                        return null;
-                    });
-                }, 20000);
-            }
+            setTimeout(() => {
+                this.setState((prev) => {
+                    const ps = prev.peerStreams;
+                    if (ps[message.from] && !ps[message.from].connected) {
+                        const next = Object.assign({}, ps);
+                        delete next[message.from];
+                        return {peerStreams: next};
+                    }
+                    return null;
+                });
+            }, 20000);
         }
     }
 
@@ -1106,7 +1143,10 @@ export class AudioCallPanel extends React.Component {
         });
 
         peer.on('data', (payload) => {
-            const data = JSON.parse(payload.toString());
+            const data = parseVoicePeerData(payload);
+            if (!data) {
+                return;
+            }
 
             debug('received voice peer data', {id, type: data.type});
 
