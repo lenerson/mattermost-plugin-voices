@@ -178,7 +178,11 @@ export class AudioCallPanel extends React.Component {
 
         this.connectPending = false;
         this.mediaRequestPending = false;
-        this.voiceSession = new VoiceSession({closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS});
+        this.voiceSession = new VoiceSession({
+            closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS,
+            createHub: createAuthorizedSignalHub,
+            createSwarm: swarm,
+        });
         Object.defineProperties(this, {
             // Transitional adapters keep the component tests focused on visible
             // behaviour while resource ownership moves into VoiceSession.
@@ -1044,47 +1048,28 @@ export class AudioCallPanel extends React.Component {
             return;
         }
 
+        if (!this.voiceSession.isActive(activeRoom.roomId) && !this.voiceSession.start(activeRoom.roomId)) {
+            return;
+        }
+
         this.connectPending = true;
 
-        const myUuid = this.props.userId;
-        const myUsername = this.props.username;
-        const myDisplayName = this.props.displayName;
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
         try {
-            const hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
-            if (!this.state.activeRoom || this.state.activeRoom.roomId !== activeRoom.roomId) {
-                hub.close();
-                return;
-            }
-
-            hub.subscribe('all').on('data', this.handleHubData.bind(this));
-
-            const sw = swarm(
-                hub,
-                {
-                    config: {iceServers},
-                    uuid: myUuid,
-                    wrap: (outgoingSignalingData) => {
-                        outgoingSignalingData.fromUserId = myUuid;
-                        outgoingSignalingData.fromUsername = myUsername;
-                        outgoingSignalingData.fromDisplayName = myDisplayName;
-                        return outgoingSignalingData;
-                    },
+            await this.voiceSession.connect({
+                roomId: activeRoom.roomId,
+                user: {
+                    id: this.props.userId,
+                    username: this.props.username,
+                    displayName: this.props.displayName,
                 },
-            );
-
-            if (!this.voiceSession.setConnection(activeRoom.roomId, hub, sw)) {
-                return;
-            }
-            sw.on('peer', this.handleConnect.bind(this));
-            sw.on('disconnect', this.handleDisconnect.bind(this));
-
-            hub.broadcast('all', {
-                type: 'connect', from: myUuid, fromUserId: myUuid, fromUsername: myUsername, fromDisplayName: myDisplayName,
+                iceServers,
+                onHubData: this.handleHubData.bind(this),
+                onPeer: this.handleConnect.bind(this),
+                onDisconnect: this.handleDisconnect.bind(this),
+                isCurrent: () => Boolean(this.state.activeRoom && this.state.activeRoom.roomId === activeRoom.roomId),
             });
-        } catch (err) {
-            debug('Authorized voice session failed', err);
         } finally {
             this.connectPending = false;
         }

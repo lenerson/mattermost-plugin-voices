@@ -60,4 +60,43 @@ describe('VoiceSession', () => {
         expect(session.state).toBe(VOICE_SESSION_IDLE);
         expect(timers).toHaveLength(1);
     });
+
+    test('connects an active room and closes a hub created for a stale room', async () => {
+        const hub = {
+            subscribe: jest.fn(() => ({on: jest.fn()})),
+            broadcast: jest.fn(),
+            close: jest.fn(),
+        };
+        const swarm = {on: jest.fn(), close: jest.fn()};
+        const session = new VoiceSession({
+            createHub: jest.fn(() => Promise.resolve(hub)),
+            createSwarm: jest.fn(() => swarm),
+        });
+
+        session.start('room-1');
+        await expect(session.connect({
+            roomId: 'room-1',
+            user: {id: 'user-1', username: 'host'},
+            iceServers: [],
+            onHubData: jest.fn(),
+            onPeer: jest.fn(),
+            onDisconnect: jest.fn(),
+        })).resolves.toBe(true);
+        expect(hub.broadcast).toHaveBeenCalledWith('all', expect.objectContaining({from: 'user-1'}));
+        expect(swarm.on).toHaveBeenCalledWith('peer', expect.any(Function));
+
+        const staleHub = {close: jest.fn()};
+        let resolveHub;
+        const staleSession = new VoiceSession({
+            createHub: jest.fn(() => new Promise((resolve) => {
+                resolveHub = resolve;
+            })),
+        });
+        staleSession.start('room-2');
+        const staleConnection = staleSession.connect({roomId: 'room-2'});
+        staleSession.close();
+        resolveHub(staleHub);
+        await expect(staleConnection).resolves.toBe(false);
+        expect(staleHub.close).toHaveBeenCalledTimes(1);
+    });
 });

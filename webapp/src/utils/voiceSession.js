@@ -5,10 +5,18 @@ export const VOICE_SESSION_ACTIVE = 'active';
 export const VOICE_SESSION_CLOSING = 'closing';
 
 export default class VoiceSession {
-    constructor({closeTimeoutMs, setTimeoutFn = setTimeout, clearTimeoutFn = clearTimeout} = {}) {
+    constructor({
+        closeTimeoutMs,
+        setTimeoutFn = setTimeout,
+        clearTimeoutFn = clearTimeout,
+        createHub,
+        createSwarm,
+    } = {}) {
         this.closeTimeoutMs = closeTimeoutMs || 2000;
         this.setTimeoutFn = setTimeoutFn;
         this.clearTimeoutFn = clearTimeoutFn;
+        this.createHub = createHub;
+        this.createSwarm = createSwarm;
         this.state = VOICE_SESSION_IDLE;
         this.roomId = null;
         this.stream = null;
@@ -49,6 +57,50 @@ export default class VoiceSession {
         this.hub = hub;
         this.swarm = swarm;
         return true;
+    }
+
+    async connect({roomId, user, iceServers, onHubData, onPeer, onDisconnect, isCurrent = () => true}) {
+        if (!this.isActive(roomId) || this.swarm || !this.createHub || !this.createSwarm) {
+            return false;
+        }
+
+        let hub = null;
+        try {
+            hub = await this.createHub(`voice-${roomId}`, [], roomId);
+            if (!this.isActive(roomId) || !isCurrent()) {
+                this.closeHub(hub);
+                return false;
+            }
+
+            hub.subscribe('all').on('data', onHubData);
+            const swarm = this.createSwarm(hub, {
+                config: {iceServers},
+                uuid: user.id,
+                wrap: (outgoingSignalingData) => ({
+                    ...outgoingSignalingData,
+                    fromUserId: user.id,
+                    fromUsername: user.username,
+                    fromDisplayName: user.displayName,
+                }),
+            });
+            if (!this.setConnection(roomId, hub, swarm)) {
+                return false;
+            }
+            swarm.on('peer', onPeer);
+            swarm.on('disconnect', onDisconnect);
+            hub.broadcast('all', {
+                type: 'connect',
+                from: user.id,
+                fromUserId: user.id,
+                fromUsername: user.username,
+                fromDisplayName: user.displayName,
+            });
+            return true;
+        } catch (error) {
+            this.closeHub(hub);
+            debug('Authorized voice session failed', error);
+            return false;
+        }
     }
 
     trackPeerTimer(timer) {
