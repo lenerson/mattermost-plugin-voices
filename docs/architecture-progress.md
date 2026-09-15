@@ -29,6 +29,6 @@ Atualizado em 13 de setembro de 2026. Este documento acompanha o plano em [archi
 
 - [x] **Etapa 4 — Ciclo de vida do frontend:** render sem efeitos, mídia e cleanup idempotentes, payloads validados e timers descartados.
 - [x] **Etapa 5 — CallSession:** máquina de estados explícita, recursos WebRTC encapsulados, eventos atrasados rejeitados e projeção serializável no Redux.
-- [ ] **Etapa 6 — VoiceSession e componentes:** separar mídia, sinalização, salas, convites e apresentação React.
+- [x] **Etapa 6 — VoiceSession e componentes:** separar mídia, sinalização, salas, convites e apresentação React.
 - [ ] **Etapa 7 — Domínio no servidor:** centralizar invariantes de salas, presença e convites em serviços de domínio.
 - [ ] **Etapa 8 — Testes e pipeline:** contratos, E2E, cleanup determinístico e melhorias de pipeline.
