@@ -23,6 +23,10 @@ export default class VoiceSession {
         this.hub = null;
         this.swarm = null;
         this.peerTimers = new Set();
+        this.peers = {};
+        this.playbacks = {};
+        this.onPeersChanged = () => {};
+        this.createAudio = () => document.createElement('audio');
         this.cleanupCallbacks = [];
     }
 
@@ -112,6 +116,125 @@ export default class VoiceSession {
         this.peerTimers.delete(timer);
     }
 
+    setPeerViewListener(listener) {
+        this.onPeersChanged = typeof listener === 'function' ? listener : () => {};
+    }
+
+    setAudioFactory(createAudio) {
+        this.createAudio = typeof createAudio === 'function' ? createAudio : this.createAudio;
+    }
+
+    registerHubPeer(message) {
+        if (this.peers[message.from]) {
+            return false;
+        }
+        this.peers[message.from] = {
+            userId: message.fromUserId,
+            username: message.fromUsername,
+            displayName: message.fromDisplayName,
+            audioOn: true,
+            videoOn: false,
+            connected: false,
+        };
+        this.emitPeers();
+        const timeout = this.trackPeerTimer(this.setTimeoutFn(() => {
+            this.untrackPeerTimer(timeout);
+            if (this.peers[message.from] && !this.peers[message.from].connected) {
+                delete this.peers[message.from];
+                this.emitPeers();
+            }
+        }, 20000));
+        return true;
+    }
+
+    attachPeer(peer, id, userId, getLocalState, speakerOn) {
+        const record = {...(this.peers[id] || {}), peer, audioOn: true, videoOn: false};
+        this.peers[id] = record;
+        this.emitPeers();
+
+        peer.on('stream', (stream) => {
+            record.stream = stream;
+            const audio = this.createAudio();
+            audio.srcObject = stream;
+            audio.muted = !speakerOn();
+            this.playbacks[id] = audio;
+            audio.play();
+        });
+        peer.on('data', (payload) => {
+            const data = parsePeerData(payload);
+            if (!data) {
+                return;
+            }
+            if (data.type === 'receivedHandshake') {
+                if (this.stream) {
+                    peer.addStream(this.stream);
+                }
+                const local = getLocalState();
+                if (!local.audioOn || !local.audioEnabled) {
+                    peer.send(JSON.stringify({type: 'audioToggle', enabled: false}));
+                }
+                if (!local.videoOn || !local.videoEnabled) {
+                    peer.send(JSON.stringify({type: 'videoToggle', enabled: false}));
+                }
+            }
+            if (data.type === 'sendHandshake') {
+                record.userId = data.userId;
+                record.connected = true;
+                peer.send(JSON.stringify({type: 'receivedHandshake'}));
+                this.emitPeers();
+            }
+            if (data.type === 'audioToggle' || data.type === 'videoToggle') {
+                record[data.type === 'audioToggle' ? 'audioOn' : 'videoOn'] = data.enabled;
+                this.emitPeers();
+            }
+        });
+        peer.send(JSON.stringify({type: 'sendHandshake', userId}));
+    }
+
+    detachPeer(id) {
+        delete this.peers[id];
+        const audio = this.playbacks[id];
+        if (audio) {
+            try {
+                audio.pause();
+                audio.srcObject = null;
+            } catch (error) {
+                debug('voice peer playback cleanup failed', error);
+            }
+            delete this.playbacks[id];
+        }
+        this.emitPeers();
+    }
+
+    setMicrophoneEnabled(enabled) {
+        if (this.stream) {
+            const tracks = this.stream.getAudioTracks();
+            if (tracks[0]) {
+                tracks[0].enabled = enabled;
+            }
+        }
+        Object.values(this.peers).forEach((record) => {
+            if (record.connected && record.peer) {
+                record.peer.send(JSON.stringify({type: 'audioToggle', enabled}));
+            }
+        });
+    }
+
+    setSpeakerEnabled(enabled) {
+        Object.values(this.playbacks).forEach((audio) => {
+            audio.muted = !enabled;
+        });
+    }
+
+    emitPeers() {
+        const views = {};
+        Object.keys(this.peers).forEach((id) => {
+            const {peer, stream, ...view} = this.peers[id];
+            views[id] = view;
+        });
+        this.onPeersChanged(views);
+    }
+
     close(done) {
         const onFinished = typeof done === 'function' ? done : () => {};
         if (this.state === VOICE_SESSION_CLOSING) {
@@ -123,6 +246,17 @@ export default class VoiceSession {
         this.cleanupCallbacks = [onFinished];
         this.peerTimers.forEach((timer) => this.clearTimeoutFn(timer));
         this.peerTimers.clear();
+        Object.values(this.playbacks).forEach((audio) => {
+            try {
+                audio.pause();
+                audio.srcObject = null;
+            } catch (error) {
+                debug('voice playback cleanup failed', error);
+            }
+        });
+        this.playbacks = {};
+        this.peers = {};
+        this.emitPeers();
         this.stopStream(this.stream);
         this.stream = null;
 
@@ -197,4 +331,25 @@ export default class VoiceSession {
             }
         }
     }
+}
+
+function parsePeerData(payload) {
+    try {
+        const data = JSON.parse(payload.toString());
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            return null;
+        }
+        if (data.type === 'receivedHandshake') {
+            return data;
+        }
+        if (data.type === 'sendHandshake' && typeof data.userId === 'string' && data.userId) {
+            return data;
+        }
+        if ((data.type === 'audioToggle' || data.type === 'videoToggle') && typeof data.enabled === 'boolean') {
+            return data;
+        }
+    } catch (error) {
+        debug('Ignoring invalid voice peer payload', error);
+    }
+    return null;
 }

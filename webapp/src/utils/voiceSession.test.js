@@ -99,4 +99,52 @@ describe('VoiceSession', () => {
         await expect(staleConnection).resolves.toBe(false);
         expect(staleHub.close).toHaveBeenCalledTimes(1);
     });
+
+    test('owns peer handshakes and emits serializable participant views', () => {
+        const listeners = {};
+        const peer = {
+            on: jest.fn((event, callback) => {
+                listeners[event] = callback;
+            }),
+            send: jest.fn(),
+            addStream: jest.fn(),
+        };
+        const track = {enabled: true};
+        const session = new VoiceSession();
+        const onPeersChanged = jest.fn();
+        session.setPeerViewListener(onPeersChanged);
+        session.setAudioFactory(() => ({play: jest.fn()}));
+        session.start('room-1');
+        session.setStream('room-1', {getTracks: () => [], getAudioTracks: () => [track]});
+        session.registerHubPeer({from: 'peer-1', fromUserId: 'user-2', fromUsername: 'guest'});
+
+        session.attachPeer(peer, 'peer-1', 'user-1', () => ({audioOn: true, audioEnabled: true, videoOn: false, videoEnabled: false}), () => true);
+        listeners.data(Buffer.from(JSON.stringify({type: 'sendHandshake', userId: 'user-2'})));
+        session.setMicrophoneEnabled(false);
+
+        const views = onPeersChanged.mock.calls[onPeersChanged.mock.calls.length - 1][0];
+        expect(views['peer-1']).toEqual(expect.objectContaining({connected: true, userId: 'user-2'}));
+        expect(views['peer-1'].peer).toBeUndefined();
+        expect(peer.send).toHaveBeenCalledWith(JSON.stringify({type: 'receivedHandshake'}));
+        expect(track.enabled).toBe(false);
+        session.close();
+    });
+
+    test('ignores malformed peer data without changing the participant state', () => {
+        const listeners = {};
+        const session = new VoiceSession();
+        const onPeersChanged = jest.fn();
+        session.setPeerViewListener(onPeersChanged);
+        session.start('room-1');
+        session.attachPeer({
+            on: (event, callback) => {
+                listeners[event] = callback;
+            },
+            send: jest.fn(),
+        }, 'peer-1', 'user-1', () => ({}), () => true);
+
+        expect(() => listeners.data(Buffer.from('not json'))).not.toThrow();
+        const views = onPeersChanged.mock.calls[onPeersChanged.mock.calls.length - 1][0];
+        expect(views['peer-1'].connected).toBeUndefined();
+    });
 });

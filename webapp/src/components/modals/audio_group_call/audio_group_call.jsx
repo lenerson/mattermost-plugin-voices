@@ -52,27 +52,6 @@ function validHubConnectMessage(message, ownID) {
     );
 }
 
-function parseVoicePeerData(payload) {
-    try {
-        const data = JSON.parse(payload.toString());
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
-            return null;
-        }
-        if (data.type === 'receivedHandshake') {
-            return data;
-        }
-        if (data.type === 'sendHandshake' && typeof data.userId === 'string' && data.userId) {
-            return data;
-        }
-        if ((data.type === 'audioToggle' || data.type === 'videoToggle') && typeof data.enabled === 'boolean') {
-            return data;
-        }
-    } catch (error) {
-        debug('Ignoring invalid voice peer payload', error);
-    }
-    return null;
-}
-
 async function getMediaStream(opts) {
     return navigator.mediaDevices.getUserMedia(opts);
 }
@@ -182,6 +161,11 @@ export class AudioCallPanel extends React.Component {
             closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS,
             createHub: createAuthorizedSignalHub,
             createSwarm: swarm,
+        });
+        this.voiceSession.setPeerViewListener((peerStreams) => {
+            if (!this.isUnmounted) {
+                this.setState({peerStreams});
+            }
         });
         Object.defineProperties(this, {
             // Transitional adapters keep the component tests focused on visible
@@ -805,14 +789,6 @@ export class AudioCallPanel extends React.Component {
     };
 
     cleanupConnection(done) {
-        Object.values(this.state.playBacks || {}).forEach((aud) => {
-            try {
-                aud.pause();
-                aud.srcObject = null;
-            } catch (e) {
-                /* ignore */
-            }
-        });
         this.voiceSession.close(done);
     }
 
@@ -1076,7 +1052,7 @@ export class AudioCallPanel extends React.Component {
     }
 
     handleHubData(message) {
-        const {swarmInitialized, peerStreams} = this.state;
+        const {swarmInitialized} = this.state;
         const myUuid = this.props.userId;
 
         if (!validHubConnectMessage(message, myUuid)) {
@@ -1088,136 +1064,25 @@ export class AudioCallPanel extends React.Component {
             this.setState({swarmInitialized: true});
         }
         debug('voice hub message received', {type: message.type});
-        if (!peerStreams[message.from]) {
+        if (this.voiceSession.registerHubPeer(message)) {
             debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
-
-            const newPeerStreams = Object.assign({}, peerStreams);
-            newPeerStreams[message.from] = {
-                userId: message.fromUserId,
-                username: message.fromUsername,
-                displayName: message.fromDisplayName,
-            };
-            this.setState({peerStreams: newPeerStreams});
-
-            const timeout = setTimeout(() => {
-                this.pendingPeerTimers.delete(timeout);
-                this.setState((prev) => {
-                    const ps = prev.peerStreams;
-                    if (ps[message.from] && !ps[message.from].connected) {
-                        const next = Object.assign({}, ps);
-                        delete next[message.from];
-                        return {peerStreams: next};
-                    }
-                    return null;
-                });
-            }, 20000);
-            this.pendingPeerTimers.add(timeout);
         }
     }
 
     handleConnect(peer, id) {
-        const {audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
         const {userId} = this.props;
 
         debug('connected to a new voice peer:', id);
-
-        const peerStreams = Object.assign({}, this.state.peerStreams);
-        const pkg = {
-            peer,
-            audioOn: true,
-            videoOn: false,
-        };
-        peerStreams[id] = Object.assign({}, peerStreams[id], pkg);
-        this.setState({peerStreams});
-
-        peer.on('stream', (stream) => {
-            const nextPeers = Object.assign({}, this.state.peerStreams);
-            debug('received voice stream', id);
-            nextPeers[id].stream = stream;
-            this.setState({peerStreams: nextPeers});
-            const playBacks = Object.assign({}, this.state.playBacks);
-            const aud = document.createElement('audio');
-            aud.srcObject = stream;
-            playBacks[id] = aud;
-            aud.muted = !this.state.speakerOn;
-            aud.play();
-            this.setState({playBacks});
-        });
-
-        peer.on('data', (payload) => {
-            const data = parseVoicePeerData(payload);
-            if (!data) {
-                return;
-            }
-
-            debug('received voice peer data', {id, type: data.type});
-
-            if (data.type === 'receivedHandshake') {
-                if (this.currentMyStream) {
-                    peer.addStream(this.currentMyStream);
-                }
-
-                if (!audioOn || !audioEnabled) {
-                    peer.send(JSON.stringify({type: 'audioToggle', enabled: false}));
-                }
-                if (!videoOn || !videoEnabled) {
-                    peer.send(JSON.stringify({type: 'videoToggle', enabled: false}));
-                }
-            }
-
-            if (data.type === 'sendHandshake') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].userId = data.userId;
-                ps[id].connected = true;
-                peer.send(JSON.stringify({type: 'receivedHandshake'}));
-                this.setState({peerStreams: ps});
-            }
-
-            if (data.type === 'audioToggle') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].audioOn = data.enabled;
-                this.setState({peerStreams: ps});
-            }
-
-            if (data.type === 'videoToggle') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].videoOn = data.enabled;
-                this.setState({peerStreams: ps});
-            }
-        });
-
-        peer.send(JSON.stringify({
-            type: 'sendHandshake',
-            userId,
-        }));
+        this.voiceSession.attachPeer(peer, id, userId, () => this.state, () => this.state.speakerOn);
     }
 
     handleDisconnect(_peer, id) {
         debug('disconnected from a peer:', id);
-
-        const peerStreams = Object.assign({}, this.state.peerStreams);
-
-        if (peerStreams[id]) {
-            delete peerStreams[id];
-            this.setState({peerStreams});
-        }
+        this.voiceSession.detachPeer(id);
     }
 
     updateMicrophoneTransmission(enabled) {
-        const {peerStreams} = this.state;
-        if (this.currentMyStream) {
-            const tracks = this.currentMyStream.getAudioTracks();
-            if (tracks[0]) {
-                tracks[0].enabled = enabled;
-            }
-        }
-
-        for (const pid of Object.keys(peerStreams)) {
-            const peerStream = peerStreams[pid];
-            if (peerStream.connected && peerStream.peer) {
-                peerStream.peer.send(JSON.stringify({type: 'audioToggle', enabled}));
-            }
-        }
+        this.voiceSession.setMicrophoneEnabled(enabled);
     }
 
     handleAudioToggle() {
@@ -1232,15 +1097,11 @@ export class AudioCallPanel extends React.Component {
 
     handleSpeakerToggle() {
         debug('Handle Speaker Toggle');
-        const {playBacks, speakerOn, audioOn} = this.state;
+        const {speakerOn, audioOn} = this.state;
         const speakerWillBeOn = !speakerOn;
         const microphoneWillBeDisabled = speakerOn && audioOn;
 
-        for (const id of Object.keys(playBacks)) {
-            const aud = playBacks[id];
-            aud.muted = !speakerWillBeOn;
-            debug(id, 'Speaker On', speakerWillBeOn);
-        }
+        this.voiceSession.setSpeakerEnabled(speakerWillBeOn);
 
         if (microphoneWillBeDisabled) {
             this.updateMicrophoneTransmission(false);
