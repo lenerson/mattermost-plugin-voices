@@ -52,29 +52,6 @@ function validHubConnectMessage(message, ownID) {
     );
 }
 
-async function getMediaStream(opts) {
-    return navigator.mediaDevices.getUserMedia(opts);
-}
-
-async function getMyStream() {
-    const audio = {
-        autoGainControl: true,
-        sampleRate: {ideal: 48000, min: 35000},
-        echoCancellation: true,
-        channelCount: {ideal: 1},
-        volume: 1,
-    };
-
-    try {
-        debug('try just audio');
-        const stream = await getMediaStream({audio});
-        return {myStream: stream, audioEnabled: true, videoEnabled: false};
-    } catch (err) {
-        debug(err);
-        return {myStream: null, audioEnabled: false, videoEnabled: false};
-    }
-}
-
 export class AudioCallPanel extends React.Component {
     static propTypes = {
         userId: PropTypes.string.isRequired,
@@ -979,21 +956,14 @@ export class AudioCallPanel extends React.Component {
         const requestedRoomID = activeRoom.roomId;
         this.mediaRequestPending = true;
         try {
-            const {myStream, audioEnabled, videoEnabled} = await getMyStream();
-            const stillInRequestedRoom = !this.isUnmounted && this.state.activeRoom &&
-                this.state.activeRoom.roomId === requestedRoomID && this.state.audioOn;
-            if (!stillInRequestedRoom) {
-                if (myStream) {
-                    myStream.getTracks().forEach((track) => track.stop());
-                }
+            const {active, audioEnabled, videoEnabled} = await this.voiceSession.acquireAudio(requestedRoomID);
+            if (this.isUnmounted || !active || !this.state.activeRoom ||
+                this.state.activeRoom.roomId !== requestedRoomID || !this.state.audioOn) {
                 return;
             }
 
             debug({audioEnabled, videoEnabled});
-            if (!this.voiceSession.setStream(requestedRoomID, myStream)) {
-                return;
-            }
-            this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
+            this.setState({initialized: true, audioEnabled, videoEnabled}, () => {
                 if (this.state.activeRoom && this.state.activeRoom.roomId === requestedRoomID) {
                     this.announcePresence(requestedRoomID);
                 }

@@ -147,4 +147,26 @@ describe('VoiceSession', () => {
         const views = onPeersChanged.mock.calls[onPeersChanged.mock.calls.length - 1][0];
         expect(views['peer-1'].connected).toBeUndefined();
     });
+
+    test('acquires audio only for the active room and stops stale media', async () => {
+        const track = {stop: jest.fn()};
+        const stream = {getTracks: () => [track]};
+        const session = new VoiceSession({getUserMedia: jest.fn(() => Promise.resolve(stream))});
+        session.start('room-1');
+
+        await expect(session.acquireAudio('room-1')).resolves.toEqual({active: true, audioEnabled: true, videoEnabled: false});
+        expect(session.stream).toBe(stream);
+
+        session.close();
+        await expect(session.acquireAudio('room-1')).resolves.toEqual({active: false, audioEnabled: false, videoEnabled: false});
+        expect(track.stop).toHaveBeenCalledTimes(2);
+    });
+
+    test('continues as listen-only when media permission is denied', async () => {
+        const session = new VoiceSession({getUserMedia: jest.fn(() => Promise.reject(new Error('denied')))});
+        session.start('room-1');
+
+        await expect(session.acquireAudio('room-1')).resolves.toEqual({active: true, audioEnabled: false, videoEnabled: false});
+        expect(session.stream).toBeNull();
+    });
 });

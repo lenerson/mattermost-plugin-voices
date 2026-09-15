@@ -11,12 +11,14 @@ export default class VoiceSession {
         clearTimeoutFn = clearTimeout,
         createHub,
         createSwarm,
+        getUserMedia = (constraints) => navigator.mediaDevices.getUserMedia(constraints),
     } = {}) {
         this.closeTimeoutMs = closeTimeoutMs || 2000;
         this.setTimeoutFn = setTimeoutFn;
         this.clearTimeoutFn = clearTimeoutFn;
         this.createHub = createHub;
         this.createSwarm = createSwarm;
+        this.getUserMedia = getUserMedia;
         this.state = VOICE_SESSION_IDLE;
         this.roomId = null;
         this.stream = null;
@@ -51,6 +53,26 @@ export default class VoiceSession {
         }
         this.stream = stream;
         return true;
+    }
+
+    async acquireAudio(roomId) {
+        const audio = {
+            autoGainControl: true,
+            sampleRate: {ideal: 48000, min: 35000},
+            echoCancellation: true,
+            channelCount: {ideal: 1},
+            volume: 1,
+        };
+        try {
+            const stream = await this.getUserMedia({audio});
+            if (!this.setStream(roomId, stream)) {
+                return {active: false, audioEnabled: false, videoEnabled: false};
+            }
+            return {active: true, audioEnabled: true, videoEnabled: false};
+        } catch (error) {
+            debug('Could not acquire voice media', error);
+            return {active: this.isActive(roomId), audioEnabled: false, videoEnabled: false};
+        }
     }
 
     setConnection(roomId, hub, swarm) {
