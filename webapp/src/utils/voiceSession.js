@@ -5,7 +5,7 @@ export const VOICE_SESSION_ACTIVE = 'active';
 export const VOICE_SESSION_CLOSING = 'closing';
 
 function noop() {
-    return undefined;
+    return null;
 }
 
 export default class VoiceSession {
