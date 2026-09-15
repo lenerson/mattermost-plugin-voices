@@ -19,6 +19,7 @@ import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents'
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
 import VoiceSession, {VOICE_SESSION_CLOSING} from '../../../utils/voiceSession';
 import VoiceRoomController from '../../../utils/voiceRoomController';
+import VoiceInviteController from '../../../utils/voiceInviteController';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -220,6 +221,11 @@ export class AudioCallPanel extends React.Component {
             onRooms: (rooms) => this.applyRooms(rooms),
             onError: (message, error) => this.reportDirectoryError(message, error),
         });
+        this.inviteController = new VoiceInviteController({
+            searchUsers: searchVoiceInviteUsers,
+            sendInvite: sendVoiceRoomInvite,
+            respondInvite: respondVoiceRoomInvite,
+        });
         this.unsubscribeDirectoryEvents = null;
         this.unsubscribeVoiceInvites = null;
         this.unsubscribeVoiceInviteDecisions = null;
@@ -320,8 +326,7 @@ export class AudioCallPanel extends React.Component {
                     voiceInviteResponsePending: false,
                     voiceInviteResponseError: '',
                 });
-                this.voiceInviteExpiryTimer = setTimeout(() => {
-                    this.voiceInviteExpiryTimer = null;
+                this.inviteController.scheduleExpiry(invite, () => {
                     if (!this.isUnmounted && this.state.incomingVoiceInvite === invite) {
                         this.setState({
                             incomingVoiceInvite: null,
@@ -329,7 +334,7 @@ export class AudioCallPanel extends React.Component {
                             voiceInviteResponseError: '',
                         });
                     }
-                }, Number(invite.expiresAt) - Date.now());
+                });
             });
         }
         if (!this.unsubscribeVoiceInviteDecisions) {
@@ -350,15 +355,11 @@ export class AudioCallPanel extends React.Component {
     }
 
     clearVoiceInviteExpiryTimer() {
-        if (this.voiceInviteExpiryTimer) {
-            clearTimeout(this.voiceInviteExpiryTimer);
-            this.voiceInviteExpiryTimer = null;
-        }
+        this.inviteController.clearExpiry();
     }
 
     isVoiceInviteExpired(invite) {
-        const expiresAt = Number(invite && invite.expiresAt);
-        return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+        return this.inviteController.isExpired(invite);
     }
 
     voiceInviteDisplayName(invite) {
@@ -491,14 +492,14 @@ export class AudioCallPanel extends React.Component {
         if (term.length < 2) {
             return;
         }
-        searchVoiceInviteUsers(term).
-            then((users) => {
-                if (this.isUnmounted || requestId !== this.inviteSearchRequestId) {
+        this.inviteController.search(term).
+            then((result) => {
+                if (this.isUnmounted || requestId !== this.inviteSearchRequestId || !this.inviteController.isCurrentSearch(result.requestId)) {
                     return;
                 }
                 this.setState({
-                    inviteSearchResults: users,
-                    inviteSearchHasRun: true,
+                    inviteSearchResults: result.users,
+                    inviteSearchHasRun: result.searched,
                     inviteSearchPending: false,
                 });
             }).
@@ -526,7 +527,7 @@ export class AudioCallPanel extends React.Component {
         }
 
         this.setState({invitingUserId: user.id, inviteError: '', inviteStatus: ''});
-        return sendVoiceRoomInvite(activeRoom.roomId, user.id).
+        return this.inviteController.send(activeRoom.roomId, user.id).
             then(() => {
                 if (!this.isUnmounted) {
                     const name = userDisplayName(user) || user.username || 'user';
@@ -566,7 +567,7 @@ export class AudioCallPanel extends React.Component {
         }
 
         this.setState({voiceInviteResponsePending: true, voiceInviteResponseError: ''});
-        return respondVoiceRoomInvite(incomingVoiceInvite.postId, incomingVoiceInvite.inviteId, decision).
+        return this.inviteController.respond(incomingVoiceInvite, decision).
             then(() => {
                 if (!this.isUnmounted) {
                     this.applyVoiceInviteDecision({invite: incomingVoiceInvite, decision});
