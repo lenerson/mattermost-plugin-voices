@@ -17,6 +17,9 @@ import {respondVoiceRoomInvite, searchVoiceInviteUsers, sendVoiceRoomInvite} fro
 import {subscribeVoiceInviteDecisions, subscribeVoiceInvites} from '../../../utils/voiceInviteEvents';
 import {subscribeVoicePresenceChanges} from '../../../utils/voicePresenceEvents';
 import {playVoiceRoomInviteSound, playVoiceRoomJoinSound, playVoiceRoomLeaveSound} from '../../../utils/voiceRoomSounds';
+import VoiceSession, {VOICE_SESSION_CLOSING} from '../../../utils/voiceSession';
+import VoiceRoomController from '../../../utils/voiceRoomController';
+import VoiceInviteController from '../../../utils/voiceInviteController';
 import {id as pluginId} from 'manifest';
 
 /*
@@ -47,50 +50,6 @@ function validHubConnectMessage(message, ownID) {
         typeof message.fromUsername === 'string' &&
         message.fromUsername,
     );
-}
-
-function parseVoicePeerData(payload) {
-    try {
-        const data = JSON.parse(payload.toString());
-        if (!data || typeof data !== 'object' || Array.isArray(data)) {
-            return null;
-        }
-        if (data.type === 'receivedHandshake') {
-            return data;
-        }
-        if (data.type === 'sendHandshake' && typeof data.userId === 'string' && data.userId) {
-            return data;
-        }
-        if ((data.type === 'audioToggle' || data.type === 'videoToggle') && typeof data.enabled === 'boolean') {
-            return data;
-        }
-    } catch (error) {
-        debug('Ignoring invalid voice peer payload', error);
-    }
-    return null;
-}
-
-async function getMediaStream(opts) {
-    return navigator.mediaDevices.getUserMedia(opts);
-}
-
-async function getMyStream() {
-    const audio = {
-        autoGainControl: true,
-        sampleRate: {ideal: 48000, min: 35000},
-        echoCancellation: true,
-        channelCount: {ideal: 1},
-        volume: 1,
-    };
-
-    try {
-        debug('try just audio');
-        const stream = await getMediaStream({audio});
-        return {myStream: stream, audioEnabled: true, videoEnabled: false};
-    } catch (err) {
-        debug(err);
-        return {myStream: null, audioEnabled: false, videoEnabled: false};
-    }
 }
 
 export class AudioCallPanel extends React.Component {
@@ -173,17 +132,66 @@ export class AudioCallPanel extends React.Component {
             voiceInviteResponseError: '',
         };
 
-        this.swarmInstance = null;
-        this.directoryPoll = null;
-        this.presenceHeartbeat = null;
-        this.currentMyStream = null;
         this.connectPending = false;
         this.mediaRequestPending = false;
-        this.cleanupInProgress = false;
-        this.cleanupCallbacks = [];
-        this.pendingPeerTimers = new Set();
+        this.voiceSession = new VoiceSession({
+            closeTimeoutMs: SWARM_CLOSE_TIMEOUT_MS,
+            createHub: createAuthorizedSignalHub,
+            createSwarm: swarm,
+        });
+        this.voiceSession.setPeerViewListener((peerStreams) => {
+            if (!this.isUnmounted) {
+                this.setState({peerStreams});
+            }
+        });
+
+        // Transitional adapters keep the component tests focused on visible
+        // behaviour while resource ownership moves into VoiceSession.
+        Object.defineProperties(this, {
+            swarmInstance: {
+                get: () => this.voiceSession.swarm,
+                set: (value) => {
+                    this.voiceSession.swarm = value;
+                },
+            },
+            currentMyStream: {
+                get: () => this.voiceSession.stream,
+                set: (value) => {
+                    this.voiceSession.stream = value;
+                },
+            },
+            pendingPeerTimers: {
+                get: () => this.voiceSession.peerTimers,
+                set: (value) => {
+                    this.voiceSession.peerTimers = value;
+                },
+            },
+            cleanupInProgress: {
+                get: () => this.voiceSession.state === VOICE_SESSION_CLOSING,
+                set: (value) => {
+                    this.voiceSession.state = value ? VOICE_SESSION_CLOSING : 'idle';
+                },
+            },
+            cleanupCallbacks: {
+                get: () => this.voiceSession.cleanupCallbacks,
+                set: (value) => {
+                    this.voiceSession.cleanupCallbacks = value;
+                },
+            },
+        });
         this.roomTransitionId = 0;
         this.isUnmounted = false;
+        this.roomController = new VoiceRoomController({
+            fetchRooms: fetchVoiceRooms,
+            sendPresence: sendVoicePresence,
+            onRooms: (rooms) => this.applyRooms(rooms),
+            onError: (message, error) => this.reportDirectoryError(message, error),
+        });
+        this.inviteController = new VoiceInviteController({
+            searchUsers: searchVoiceInviteUsers,
+            sendInvite: sendVoiceRoomInvite,
+            respondInvite: respondVoiceRoomInvite,
+        });
         this.unsubscribeDirectoryEvents = null;
         this.unsubscribeVoiceInvites = null;
         this.unsubscribeVoiceInviteDecisions = null;
@@ -251,9 +259,7 @@ export class AudioCallPanel extends React.Component {
     }
 
     refreshRooms() {
-        return fetchVoiceRooms().
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => this.reportDirectoryError('Could not load the voice channels.', err));
+        return this.roomController.refresh();
     }
 
     startDirectoryEvents() {
@@ -286,8 +292,7 @@ export class AudioCallPanel extends React.Component {
                     voiceInviteResponsePending: false,
                     voiceInviteResponseError: '',
                 });
-                this.voiceInviteExpiryTimer = setTimeout(() => {
-                    this.voiceInviteExpiryTimer = null;
+                this.inviteController.scheduleExpiry(invite, () => {
                     if (!this.isUnmounted && this.state.incomingVoiceInvite === invite) {
                         this.setState({
                             incomingVoiceInvite: null,
@@ -295,7 +300,7 @@ export class AudioCallPanel extends React.Component {
                             voiceInviteResponseError: '',
                         });
                     }
-                }, Number(invite.expiresAt) - Date.now());
+                });
             });
         }
         if (!this.unsubscribeVoiceInviteDecisions) {
@@ -316,15 +321,11 @@ export class AudioCallPanel extends React.Component {
     }
 
     clearVoiceInviteExpiryTimer() {
-        if (this.voiceInviteExpiryTimer) {
-            clearTimeout(this.voiceInviteExpiryTimer);
-            this.voiceInviteExpiryTimer = null;
-        }
+        this.inviteController.clearExpiry();
     }
 
     isVoiceInviteExpired(invite) {
-        const expiresAt = Number(invite && invite.expiresAt);
-        return !Number.isFinite(expiresAt) || expiresAt <= Date.now();
+        return this.inviteController.isExpired(invite);
     }
 
     voiceInviteDisplayName(invite) {
@@ -457,14 +458,14 @@ export class AudioCallPanel extends React.Component {
         if (term.length < 2) {
             return;
         }
-        searchVoiceInviteUsers(term).
-            then((users) => {
-                if (this.isUnmounted || requestId !== this.inviteSearchRequestId) {
+        this.inviteController.search(term).
+            then((result) => {
+                if (this.isUnmounted || requestId !== this.inviteSearchRequestId || !this.inviteController.isCurrentSearch(result.requestId)) {
                     return;
                 }
                 this.setState({
-                    inviteSearchResults: users,
-                    inviteSearchHasRun: true,
+                    inviteSearchResults: result.users,
+                    inviteSearchHasRun: result.searched,
                     inviteSearchPending: false,
                 });
             }).
@@ -492,7 +493,7 @@ export class AudioCallPanel extends React.Component {
         }
 
         this.setState({invitingUserId: user.id, inviteError: '', inviteStatus: ''});
-        return sendVoiceRoomInvite(activeRoom.roomId, user.id).
+        return this.inviteController.send(activeRoom.roomId, user.id).
             then(() => {
                 if (!this.isUnmounted) {
                     const name = userDisplayName(user) || user.username || 'user';
@@ -532,7 +533,7 @@ export class AudioCallPanel extends React.Component {
         }
 
         this.setState({voiceInviteResponsePending: true, voiceInviteResponseError: ''});
-        return respondVoiceRoomInvite(incomingVoiceInvite.postId, incomingVoiceInvite.inviteId, decision).
+        return this.inviteController.respond(incomingVoiceInvite, decision).
             then(() => {
                 if (!this.isUnmounted) {
                     this.applyVoiceInviteDecision({invite: incomingVoiceInvite, decision});
@@ -610,25 +611,16 @@ export class AudioCallPanel extends React.Component {
     }
 
     bootstrapDirectory() {
-        if (this.directoryPoll) {
-            return;
-        }
-        this.refreshRooms();
-        this.directoryPoll = setInterval(() => this.refreshRooms(), DIRECTORY_POLL_MS);
+        this.roomController.startDirectory(DIRECTORY_POLL_MS);
     }
 
     stopDirectory() {
-        if (this.directoryPoll) {
-            clearInterval(this.directoryPoll);
-            this.directoryPoll = null;
-        }
+        this.roomController.stopDirectory();
     }
 
     announcePresence(roomId) {
         const microphoneOn = Boolean(this.state.audioOn && this.state.audioEnabled);
-        return sendVoicePresence(roomId, microphoneOn).
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => debug('voice presence heartbeat failed', err));
+        return this.roomController.announcePresence(roomId, microphoneOn);
     }
 
     /**
@@ -636,26 +628,22 @@ export class AudioCallPanel extends React.Component {
      * refreshed, which is what covers a browser that closes without leaving.
      */
     startPresence(roomId) {
-        this.stopPresence();
-        this.announcePresence(roomId);
-        this.presenceHeartbeat = setInterval(() => this.announcePresence(roomId), PRESENCE_HEARTBEAT_MS);
+        this.roomController.startPresence(
+            roomId,
+            () => Boolean(this.state.audioOn && this.state.audioEnabled),
+            PRESENCE_HEARTBEAT_MS,
+        );
     }
 
     stopPresence() {
-        if (this.presenceHeartbeat) {
-            clearInterval(this.presenceHeartbeat);
-            this.presenceHeartbeat = null;
-        }
+        this.roomController.stopPresence();
     }
 
     clearPresence() {
-        this.stopPresence();
-
         // Do not wait for the next directory poll: the endpoint returns the
         // refreshed room list, so apply it as soon as the departure lands.
-        return sendVoicePresence('', false).
-            then((rooms) => this.applyRooms(rooms)).
-            catch((err) => debug('clearing voice presence failed', err));
+        this.stopPresence();
+        return this.roomController.announcePresence('', false);
     }
 
     /**
@@ -779,81 +767,7 @@ export class AudioCallPanel extends React.Component {
     };
 
     cleanupConnection(done) {
-        const onFinished = typeof done === 'function' ? done : function noopCallback() {
-            /* optional async completion */
-        };
-        if (this.cleanupInProgress) {
-            this.cleanupCallbacks.push(onFinished);
-            return;
-        }
-
-        this.cleanupInProgress = true;
-        this.cleanupCallbacks = [onFinished];
-        let finished = false;
-        let closeFallback = null;
-        const finish = () => {
-            if (finished) {
-                return;
-            }
-            finished = true;
-            if (closeFallback) {
-                clearTimeout(closeFallback);
-                closeFallback = null;
-            }
-            this.cleanupInProgress = false;
-            const callbacks = this.cleanupCallbacks;
-            this.cleanupCallbacks = [];
-            callbacks.forEach((callback) => {
-                try {
-                    callback();
-                } catch (error) {
-                    debug('voice cleanup callback failed', error);
-                }
-            });
-        };
-
-        const pendingPeerTimers = this.pendingPeerTimers || new Set();
-        this.pendingPeerTimers = pendingPeerTimers;
-        pendingPeerTimers.forEach((timer) => clearTimeout(timer));
-        pendingPeerTimers.clear();
-
-        Object.values(this.state.playBacks || {}).forEach((aud) => {
-            try {
-                aud.pause();
-                aud.srcObject = null;
-            } catch (e) {
-                /* ignore */
-            }
-        });
-
-        if (this.currentMyStream) {
-            try {
-                this.currentMyStream.getTracks().forEach((t) => t.stop());
-            } catch (e) {
-                /* ignore */
-            }
-            this.currentMyStream = null;
-        }
-
-        if (this.swarmInstance) {
-            const sw = this.swarmInstance;
-            this.swarmInstance = null;
-
-            closeFallback = setTimeout(() => {
-                debug('voice swarm close timed out; continuing cleanup');
-                finish();
-            }, SWARM_CLOSE_TIMEOUT_MS);
-
-            try {
-                sw.close(finish);
-            } catch (e) {
-                debug('voice swarm close failed; continuing cleanup', e);
-                finish();
-            }
-            return;
-        }
-
-        finish();
+        this.voiceSession.close(done);
     }
 
     resetActiveRoomState() {
@@ -953,6 +867,10 @@ export class AudioCallPanel extends React.Component {
             if (this.isUnmounted) {
                 return;
             }
+            if (!this.voiceSession.start(roomId)) {
+                debug('Cannot start a second voice room session.');
+                return;
+            }
             this.setState({
                 activeRoom: {roomId, name},
                 initialized: false,
@@ -1039,19 +957,14 @@ export class AudioCallPanel extends React.Component {
         const requestedRoomID = activeRoom.roomId;
         this.mediaRequestPending = true;
         try {
-            const {myStream, audioEnabled, videoEnabled} = await getMyStream();
-            const stillInRequestedRoom = !this.isUnmounted && this.state.activeRoom &&
-                this.state.activeRoom.roomId === requestedRoomID && this.state.audioOn;
-            if (!stillInRequestedRoom) {
-                if (myStream) {
-                    myStream.getTracks().forEach((track) => track.stop());
-                }
+            const {active, audioEnabled, videoEnabled} = await this.voiceSession.acquireAudio(requestedRoomID);
+            if (this.isUnmounted || !active || !this.state.activeRoom ||
+                this.state.activeRoom.roomId !== requestedRoomID || !this.state.audioOn) {
                 return;
             }
 
             debug({audioEnabled, videoEnabled});
-            this.currentMyStream = myStream;
-            this.setState({initialized: true, myStream, audioEnabled, videoEnabled}, () => {
+            this.setState({initialized: true, audioEnabled, videoEnabled}, () => {
                 if (this.state.activeRoom && this.state.activeRoom.roomId === requestedRoomID) {
                     this.announcePresence(requestedRoomID);
                 }
@@ -1082,52 +995,35 @@ export class AudioCallPanel extends React.Component {
             return;
         }
 
+        if (!this.voiceSession.isActive(activeRoom.roomId) && !this.voiceSession.start(activeRoom.roomId)) {
+            return;
+        }
+
         this.connectPending = true;
 
-        const myUuid = this.props.userId;
-        const myUsername = this.props.username;
-        const myDisplayName = this.props.displayName;
         const iceServers = buildIceServers(stunServer, turnServer, turnServerUsername, turnServerCredential);
 
         try {
-            const hub = await createAuthorizedSignalHub(`voice-${activeRoom.roomId}`, [], activeRoom.roomId);
-            if (!this.state.activeRoom || this.state.activeRoom.roomId !== activeRoom.roomId) {
-                hub.close();
-                return;
-            }
-
-            hub.subscribe('all').on('data', this.handleHubData.bind(this));
-
-            const sw = swarm(
-                hub,
-                {
-                    config: {iceServers},
-                    uuid: myUuid,
-                    wrap: (outgoingSignalingData) => {
-                        outgoingSignalingData.fromUserId = myUuid;
-                        outgoingSignalingData.fromUsername = myUsername;
-                        outgoingSignalingData.fromDisplayName = myDisplayName;
-                        return outgoingSignalingData;
-                    },
+            await this.voiceSession.connect({
+                roomId: activeRoom.roomId,
+                user: {
+                    id: this.props.userId,
+                    username: this.props.username,
+                    displayName: this.props.displayName,
                 },
-            );
-
-            this.swarmInstance = sw;
-            sw.on('peer', this.handleConnect.bind(this));
-            sw.on('disconnect', this.handleDisconnect.bind(this));
-
-            hub.broadcast('all', {
-                type: 'connect', from: myUuid, fromUserId: myUuid, fromUsername: myUsername, fromDisplayName: myDisplayName,
+                iceServers,
+                onHubData: this.handleHubData.bind(this),
+                onPeer: this.handleConnect.bind(this),
+                onDisconnect: this.handleDisconnect.bind(this),
+                isCurrent: () => Boolean(this.state.activeRoom && this.state.activeRoom.roomId === activeRoom.roomId),
             });
-        } catch (err) {
-            debug('Authorized voice session failed', err);
         } finally {
             this.connectPending = false;
         }
     }
 
     handleHubData(message) {
-        const {swarmInitialized, peerStreams} = this.state;
+        const {swarmInitialized} = this.state;
         const myUuid = this.props.userId;
 
         if (!validHubConnectMessage(message, myUuid)) {
@@ -1139,136 +1035,25 @@ export class AudioCallPanel extends React.Component {
             this.setState({swarmInitialized: true});
         }
         debug('voice hub message received', {type: message.type});
-        if (!peerStreams[message.from]) {
+        if (this.voiceSession.registerHubPeer(message)) {
             debug('connecting to', {uuid: message.from, userId: message.fromUserId, username: message.fromUsername});
-
-            const newPeerStreams = Object.assign({}, peerStreams);
-            newPeerStreams[message.from] = {
-                userId: message.fromUserId,
-                username: message.fromUsername,
-                displayName: message.fromDisplayName,
-            };
-            this.setState({peerStreams: newPeerStreams});
-
-            const timeout = setTimeout(() => {
-                this.pendingPeerTimers.delete(timeout);
-                this.setState((prev) => {
-                    const ps = prev.peerStreams;
-                    if (ps[message.from] && !ps[message.from].connected) {
-                        const next = Object.assign({}, ps);
-                        delete next[message.from];
-                        return {peerStreams: next};
-                    }
-                    return null;
-                });
-            }, 20000);
-            this.pendingPeerTimers.add(timeout);
         }
     }
 
     handleConnect(peer, id) {
-        const {audioOn, videoOn, audioEnabled, videoEnabled} = this.state;
         const {userId} = this.props;
 
         debug('connected to a new voice peer:', id);
-
-        const peerStreams = Object.assign({}, this.state.peerStreams);
-        const pkg = {
-            peer,
-            audioOn: true,
-            videoOn: false,
-        };
-        peerStreams[id] = Object.assign({}, peerStreams[id], pkg);
-        this.setState({peerStreams});
-
-        peer.on('stream', (stream) => {
-            const nextPeers = Object.assign({}, this.state.peerStreams);
-            debug('received voice stream', id);
-            nextPeers[id].stream = stream;
-            this.setState({peerStreams: nextPeers});
-            const playBacks = Object.assign({}, this.state.playBacks);
-            const aud = document.createElement('audio');
-            aud.srcObject = stream;
-            playBacks[id] = aud;
-            aud.muted = !this.state.speakerOn;
-            aud.play();
-            this.setState({playBacks});
-        });
-
-        peer.on('data', (payload) => {
-            const data = parseVoicePeerData(payload);
-            if (!data) {
-                return;
-            }
-
-            debug('received voice peer data', {id, type: data.type});
-
-            if (data.type === 'receivedHandshake') {
-                if (this.currentMyStream) {
-                    peer.addStream(this.currentMyStream);
-                }
-
-                if (!audioOn || !audioEnabled) {
-                    peer.send(JSON.stringify({type: 'audioToggle', enabled: false}));
-                }
-                if (!videoOn || !videoEnabled) {
-                    peer.send(JSON.stringify({type: 'videoToggle', enabled: false}));
-                }
-            }
-
-            if (data.type === 'sendHandshake') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].userId = data.userId;
-                ps[id].connected = true;
-                peer.send(JSON.stringify({type: 'receivedHandshake'}));
-                this.setState({peerStreams: ps});
-            }
-
-            if (data.type === 'audioToggle') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].audioOn = data.enabled;
-                this.setState({peerStreams: ps});
-            }
-
-            if (data.type === 'videoToggle') {
-                const ps = Object.assign({}, this.state.peerStreams);
-                ps[id].videoOn = data.enabled;
-                this.setState({peerStreams: ps});
-            }
-        });
-
-        peer.send(JSON.stringify({
-            type: 'sendHandshake',
-            userId,
-        }));
+        this.voiceSession.attachPeer(peer, id, userId, () => this.state, () => this.state.speakerOn);
     }
 
     handleDisconnect(_peer, id) {
         debug('disconnected from a peer:', id);
-
-        const peerStreams = Object.assign({}, this.state.peerStreams);
-
-        if (peerStreams[id]) {
-            delete peerStreams[id];
-            this.setState({peerStreams});
-        }
+        this.voiceSession.detachPeer(id);
     }
 
     updateMicrophoneTransmission(enabled) {
-        const {peerStreams} = this.state;
-        if (this.currentMyStream) {
-            const tracks = this.currentMyStream.getAudioTracks();
-            if (tracks[0]) {
-                tracks[0].enabled = enabled;
-            }
-        }
-
-        for (const pid of Object.keys(peerStreams)) {
-            const peerStream = peerStreams[pid];
-            if (peerStream.connected && peerStream.peer) {
-                peerStream.peer.send(JSON.stringify({type: 'audioToggle', enabled}));
-            }
-        }
+        this.voiceSession.setMicrophoneEnabled(enabled);
     }
 
     handleAudioToggle() {
@@ -1283,15 +1068,11 @@ export class AudioCallPanel extends React.Component {
 
     handleSpeakerToggle() {
         debug('Handle Speaker Toggle');
-        const {playBacks, speakerOn, audioOn} = this.state;
+        const {speakerOn, audioOn} = this.state;
         const speakerWillBeOn = !speakerOn;
         const microphoneWillBeDisabled = speakerOn && audioOn;
 
-        for (const id of Object.keys(playBacks)) {
-            const aud = playBacks[id];
-            aud.muted = !speakerWillBeOn;
-            debug(id, 'Speaker On', speakerWillBeOn);
-        }
+        this.voiceSession.setSpeakerEnabled(speakerWillBeOn);
 
         if (microphoneWillBeDisabled) {
             this.updateMicrophoneTransmission(false);

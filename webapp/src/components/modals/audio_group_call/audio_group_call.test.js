@@ -515,7 +515,14 @@ describe('AudioCallPanel external signaling validation', () => {
 
         expect(panel.state.swarmInitialized).toBe(true);
         expect(panel.state.peerStreams).toEqual({
-            'peer-uuid': {userId: 'user-2', username: 'bruno', displayName: 'Bruno'},
+            'peer-uuid': {
+                userId: 'user-2',
+                username: 'bruno',
+                displayName: 'Bruno',
+                audioOn: true,
+                videoOn: false,
+                connected: false,
+            },
         });
         jest.clearAllTimers();
         jest.useRealTimers();
@@ -910,12 +917,12 @@ describe('AudioCallPanel speaker control', () => {
         panel.state = {
             ...panel.state,
             activeRoom: {roomId: 'room-1', name: 'Standup'},
-            playBacks: {peer: playback},
-            peerStreams: {peer: {connected: true, peer}},
             speakerOn: true,
             audioOn: true,
         };
-        panel.currentMyStream = {getAudioTracks: () => [audioTrack]};
+        panel.voiceSession.playbacks = {peer: playback};
+        panel.voiceSession.peers = {peer: {connected: true, peer}};
+        panel.voiceSession.stream = {getAudioTracks: () => [audioTrack]};
         panel.announcePresence = jest.fn();
         panel.setState = (update, callback) => {
             panel.state = {...panel.state, ...update};
@@ -948,8 +955,8 @@ describe('AudioCallPanel participant microphone state', () => {
     test('publishes the local microphone state with presence', async () => {
         sendVoicePresence.mockClear();
         sendVoicePresence.mockResolvedValue([]);
-        const panel = Object.create(AudioCallPanel.prototype);
-        panel.state = {audioOn: true, audioEnabled: false};
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.state = {...panel.state, audioOn: true, audioEnabled: false};
         panel.applyRooms = jest.fn();
 
         await panel.announcePresence('room-1');
@@ -983,7 +990,7 @@ describe('AudioCallPanel leaving a room', () => {
         const rooms = [{roomId: 'room-1', participants: []}];
         sendVoicePresence.mockResolvedValue(rooms);
 
-        const panel = Object.create(AudioCallPanel.prototype);
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
         panel.stopPresence = jest.fn();
         panel.applyRooms = jest.fn();
 
@@ -1024,11 +1031,8 @@ describe('AudioCallPanel leaving a room', () => {
 
     test('continues cleanup when closing the swarm throws', () => {
         const done = jest.fn();
-        const panel = {
-            state: {playBacks: {}},
-            currentMyStream: null,
-            swarmInstance: {close: jest.fn(throwCloseError)},
-        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.voiceSession.swarm = {close: jest.fn(throwCloseError)};
 
         let thrownError = null;
         try {
@@ -1038,7 +1042,7 @@ describe('AudioCallPanel leaving a room', () => {
         }
 
         expect(thrownError).toBeNull();
-        expect(panel.swarmInstance).toBeNull();
+        expect(panel.voiceSession.swarm).toBeNull();
         expect(done).toHaveBeenCalledTimes(1);
     });
 
@@ -1046,18 +1050,13 @@ describe('AudioCallPanel leaving a room', () => {
         const cleanup = {};
         const firstDone = jest.fn();
         const secondDone = jest.fn();
-        const panel = {
-            cleanupInProgress: false,
-            cleanupCallbacks: [],
-            state: {playBacks: {}},
-            currentMyStream: null,
-            swarmInstance: {close: jest.fn(captureCleanupCallback(cleanup))},
-        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.voiceSession.swarm = {close: jest.fn(captureCleanupCallback(cleanup))};
 
         AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
         AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
 
-        expect(panel.swarmInstance).toBeNull();
+        expect(panel.voiceSession.swarm).toBeNull();
         expect(firstDone).not.toHaveBeenCalled();
         expect(secondDone).not.toHaveBeenCalled();
         expect(cleanup.finish).toBeDefined();
@@ -1073,13 +1072,8 @@ describe('AudioCallPanel leaving a room', () => {
         jest.useFakeTimers();
         const firstDone = jest.fn();
         const secondDone = jest.fn();
-        const panel = {
-            cleanupInProgress: false,
-            cleanupCallbacks: [],
-            state: {playBacks: {}},
-            currentMyStream: null,
-            swarmInstance: {close: jest.fn(leaveClosePending)},
-        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.voiceSession.swarm = {close: jest.fn(leaveClosePending)};
 
         AudioCallPanel.prototype.cleanupConnection.call(panel, firstDone);
         AudioCallPanel.prototype.cleanupConnection.call(panel, secondDone);
@@ -1106,11 +1100,8 @@ describe('AudioCallPanel leaving a room', () => {
     test('continues cleanup when the swarm omits its close callback', () => {
         jest.useFakeTimers();
         const done = jest.fn();
-        const panel = {
-            state: {playBacks: {}},
-            currentMyStream: null,
-            swarmInstance: {close: jest.fn(leaveClosePending)},
-        };
+        const panel = new AudioCallPanel({userId: 'user-1', profilesById: {}, isSystemAdmin: false});
+        panel.voiceSession.swarm = {close: jest.fn(leaveClosePending)};
 
         AudioCallPanel.prototype.cleanupConnection.call(panel, done);
         expect(done).not.toHaveBeenCalled();

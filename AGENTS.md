@@ -27,3 +27,7 @@ Server tests use Go's `testing`, `httptest`, and `testify`; webapp tests use Jes
 ## Commit & Pull Request Guidelines
 
 Never commit development work directly to `main`. Branch names must follow `feature/<context>-on-main`, `bugfix/<context>-on-main`, `hotfix/<context>-on-main`, or `release/v<version>-on-main`. Commit subjects must use `type(context): Message`, for example `feat(voice-presence): Add presence heartbeat`. Keep commits focused. PRs should explain behavior and architecture impact, link relevant issues, list verification commands, and include screenshots or recordings for UI changes. Never commit credentials, TURN secrets, `node_modules/`, or release artifacts.
+
+## Pull Request Preflight
+
+Before opening or updating a PR, run the same mandatory gates used by CI from a clean working tree: `make check-style` and `make test`. Focused Jest or Go tests are useful while developing but do not replace these commands. Because `make test` runs `npm run fix`, finish by running `git diff --check` and `git status --short`; review and commit any intentional formatting changes, or restore only accidental changes. Do not create the PR until both gates pass and the worktree contains only the intended commits.
