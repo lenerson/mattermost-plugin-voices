@@ -4,6 +4,10 @@ export const VOICE_SESSION_IDLE = 'idle';
 export const VOICE_SESSION_ACTIVE = 'active';
 export const VOICE_SESSION_CLOSING = 'closing';
 
+function noop() {
+    return undefined;
+}
+
 export default class VoiceSession {
     constructor({
         closeTimeoutMs,
@@ -27,7 +31,7 @@ export default class VoiceSession {
         this.peerTimers = new Set();
         this.peers = {};
         this.playbacks = {};
-        this.onPeersChanged = () => {};
+        this.onPeersChanged = noop;
         this.createAudio = () => document.createElement('audio');
         this.cleanupCallbacks = [];
     }
@@ -139,7 +143,7 @@ export default class VoiceSession {
     }
 
     setPeerViewListener(listener) {
-        this.onPeersChanged = typeof listener === 'function' ? listener : () => {};
+        this.onPeersChanged = typeof listener === 'function' ? listener : noop;
     }
 
     setAudioFactory(createAudio) {
@@ -251,14 +255,16 @@ export default class VoiceSession {
     emitPeers() {
         const views = {};
         Object.keys(this.peers).forEach((id) => {
-            const {peer, stream, ...view} = this.peers[id];
+            const view = {...this.peers[id]};
+            delete view.peer;
+            delete view.stream;
             views[id] = view;
         });
         this.onPeersChanged(views);
     }
 
     close(done) {
-        const onFinished = typeof done === 'function' ? done : () => {};
+        const onFinished = typeof done === 'function' ? done : noop;
         if (this.state === VOICE_SESSION_CLOSING) {
             this.cleanupCallbacks.push(onFinished);
             return;
@@ -347,7 +353,7 @@ export default class VoiceSession {
         this.closeHub(hub);
         if (swarm && typeof swarm.close === 'function') {
             try {
-                swarm.close(() => {});
+                swarm.close(noop);
             } catch (error) {
                 debug('inactive voice swarm close failed', error);
             }

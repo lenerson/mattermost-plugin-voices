@@ -1,3 +1,4 @@
+/* eslint-disable max-nested-callbacks */
 import VoiceSession, {VOICE_SESSION_ACTIVE, VOICE_SESSION_IDLE} from './voiceSession';
 
 describe('VoiceSession', () => {
@@ -51,7 +52,11 @@ describe('VoiceSession', () => {
         const second = jest.fn();
 
         session.start('room-1');
-        session.setConnection('room-1', {close: jest.fn()}, {close: () => { throw new Error('close failed'); }});
+        session.setConnection('room-1', {close: jest.fn()}, {
+            close: () => {
+                throw new Error('close failed');
+            },
+        });
         session.close(first);
         session.close(second);
 

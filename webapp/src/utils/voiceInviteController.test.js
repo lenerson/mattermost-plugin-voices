@@ -1,3 +1,4 @@
+/* eslint-disable max-nested-callbacks */
 import VoiceInviteController from './voiceInviteController';
 
 const activeInvite = {postId: 'post-1', inviteId: 'invite-1', expiresAt: 200};

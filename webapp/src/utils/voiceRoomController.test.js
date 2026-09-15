@@ -1,3 +1,4 @@
+/* eslint-disable max-nested-callbacks */
 import VoiceRoomController from './voiceRoomController';
 
 describe('VoiceRoomController', () => {
