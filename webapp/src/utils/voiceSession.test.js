@@ -96,6 +96,7 @@ describe('VoiceSession', () => {
             createHub: jest.fn(() => new Promise((resolve) => {
                 resolveHub = resolve;
             })),
+            createSwarm: jest.fn(),
         });
         staleSession.start('room-2');
         const staleConnection = staleSession.connect({roomId: 'room-2'});

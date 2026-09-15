@@ -41,7 +41,7 @@ export default class VoiceRoomController {
 
     startPresence(roomId, microphoneOn, intervalMs) {
         this.stopPresence();
-        this.announcePresence(roomId, microphoneOn);
+        this.announcePresence(roomId, microphoneOn());
         this.presenceHeartbeat = this.setIntervalFn(() => this.announcePresence(roomId, microphoneOn()), intervalMs);
     }
 
