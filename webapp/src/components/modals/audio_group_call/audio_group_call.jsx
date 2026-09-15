@@ -144,6 +144,7 @@ export class AudioCallPanel extends React.Component {
                 this.setState({peerStreams});
             }
         });
+
         // Transitional adapters keep the component tests focused on visible
         // behaviour while resource ownership moves into VoiceSession.
         Object.defineProperties(this, {
