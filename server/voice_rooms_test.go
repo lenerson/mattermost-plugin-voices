@@ -278,6 +278,36 @@ func TestVoiceRoomDeleteByCreator(t *testing.T) {
 	assert.Empty(t, decodeVoiceRooms(t, w))
 }
 
+func TestVoiceRoomDeleteClearsPresenceAndNotifiesParticipants(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Room").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	eventsBefore := len(kv.webSocketEvents)
+
+	response := voiceRoomsRequest(p, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil)
+
+	require.Equal(t, http.StatusOK, response.Code)
+	presence, _, err := p.readVoicePresence()
+	require.NoError(t, err)
+	assert.Empty(t, presence["room-1"])
+	assert.Equal(t, []string{voicePresenceEvent}, kv.webSocketEvents[eventsBefore:])
+	assert.Equal(t, "talker", kv.webSocketPayloads[eventsBefore]["userId"])
+	assert.Equal(t, http.StatusNotFound, heartbeat(p, "talker", "room-1").Code)
+}
+
+func TestVoiceRoomRejectedDeleteKeepsPresence(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Room").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+
+	response := voiceRoomsRequest(p, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", "intruder", nil)
+
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	presence, _, err := p.readVoicePresence()
+	require.NoError(t, err)
+	assert.Contains(t, presence["room-1"], "talker")
+}
+
 func TestVoiceRoomDeleteBySystemAdmin(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin("admin")
 	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Room").Code)

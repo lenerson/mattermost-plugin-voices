@@ -35,10 +35,11 @@ var (
 // which meant a room was invisible to anyone not subscribed at the instant it
 // was announced.
 type voiceRoom struct {
-	RoomID    string `json:"roomId"`
-	Name      string `json:"name"`
-	CreatorID string `json:"creatorId"`
-	CreateAt  int64  `json:"createAt"`
+	RoomID     string `json:"roomId"`
+	Name       string `json:"name"`
+	CreatorID  string `json:"creatorId"`
+	CreateAt   int64  `json:"createAt"`
+	Generation string `json:"generation,omitempty"`
 }
 
 func sortVoiceRooms(rooms []voiceRoom) {
@@ -207,26 +208,9 @@ func (p *Plugin) handleVoiceRoomCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rooms, err := p.mutateVoiceRooms(func(current []voiceRoom) ([]voiceRoom, error) {
-		for _, room := range current {
-			if room.RoomID == roomID {
-				// Re-announcing an existing room is a no-op, so a client that
-				// retries cannot rename or steal someone else's room.
-				return current, nil
-			}
-		}
-		if len(current) >= maxVoiceRooms {
-			return nil, errVoiceRoomsFull
-		}
-		next := make([]voiceRoom, 0, len(current)+1)
-		next = append(next, current...)
-		return append(next, voiceRoom{
-			RoomID:    roomID,
-			Name:      name,
-			CreatorID: userID,
-			CreateAt:  model.GetMillis(),
-		}), nil
-	})
+	p.voiceDomainMu.Lock()
+	rooms, err := (voiceRoomService{repo: p}).createRoom(userID, roomID, name)
+	p.voiceDomainMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errVoiceRoomsFull) {
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -248,19 +232,10 @@ func (p *Plugin) handleVoiceRoomDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rooms, err := p.mutateVoiceRooms(func(current []voiceRoom) ([]voiceRoom, error) {
-		next := make([]voiceRoom, 0, len(current))
-		for _, room := range current {
-			if room.RoomID != roomID {
-				next = append(next, room)
-				continue
-			}
-			if room.CreatorID != userID && !p.canManageAnyVoiceRoom(userID) {
-				return nil, errVoiceRoomForbidden
-			}
-		}
-		return next, nil
-	})
+	canManageAny := p.canManageAnyVoiceRoom(userID)
+	p.voiceDomainMu.Lock()
+	rooms, departed, err := (voiceRoomService{repo: p}).deleteRoom(userID, roomID, canManageAny)
+	p.voiceDomainMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errVoiceRoomForbidden) {
 			http.Error(w, err.Error(), http.StatusForbidden)
@@ -269,6 +244,12 @@ func (p *Plugin) handleVoiceRoomDelete(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	for _, departedID := range departed {
+		p.API.PublishWebSocketEvent(voicePresenceEvent, map[string]interface{}{
+			"userId": departedID, "previousRoomId": roomID, "roomId": "", "audioOn": false,
+		}, &model.WebsocketBroadcast{})
+	}
+	p.getSignalSessions().syncVoiceRoomParticipants(roomID, nil)
 
 	p.writeVoiceRoomsJSON(w, rooms)
 }

@@ -34,6 +34,8 @@ type voiceInviteRecord struct {
 	InviteID         string `json:"inviteId"`
 	RoomID           string `json:"roomId"`
 	RoomName         string `json:"roomName"`
+	RoomCreateAt     int64  `json:"roomCreateAt"`
+	RoomGeneration   string `json:"roomGeneration"`
 	InviterID        string `json:"inviterId"`
 	InviterUsername  string `json:"inviterUsername"`
 	InviterFirstName string `json:"inviterFirstName"`
@@ -49,6 +51,8 @@ func (invite voiceInviteRecord) asMap() map[string]interface{} {
 		"inviteId":         invite.InviteID,
 		"roomId":           invite.RoomID,
 		"roomName":         invite.RoomName,
+		"roomCreateAt":     invite.RoomCreateAt,
+		"roomGeneration":   invite.RoomGeneration,
 		"inviterId":        invite.InviterID,
 		"inviterUsername":  invite.InviterUsername,
 		"inviterFirstName": invite.InviterFirstName,
@@ -128,35 +132,20 @@ func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rooms, _, err := p.readVoiceRooms()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	room := voiceRoomWithID(rooms, roomID)
-	if room == nil {
-		http.Error(w, errVoiceInviteRoomNotFound.Error(), http.StatusNotFound)
-		return
-	}
-
 	target, appErr := p.API.GetUser(targetUserID)
 	if appErr != nil || target == nil || target.DeleteAt != 0 {
 		http.Error(w, "invited user not found", http.StatusNotFound)
 		return
 	}
 
-	_, err = p.mutateVoicePresence(func(presence voicePresence) error {
-		if userVoiceRoom(presence, inviterID) != roomID {
-			return errVoiceInviteSenderNotInRoom
-		}
-		if userVoiceRoom(presence, targetUserID) == roomID {
-			return errVoiceInviteTargetUnavailable
-		}
-		return nil
-	})
+	p.voiceDomainMu.Lock()
+	defer p.voiceDomainMu.Unlock()
+	room, err := (voiceRoomService{repo: p}).inviteRoom(inviterID, targetUserID, roomID)
 	if err != nil {
 		status := http.StatusInternalServerError
 		switch err {
+		case errVoiceInviteRoomNotFound:
+			status = http.StatusNotFound
 		case errVoiceInviteSenderNotInRoom:
 			status = http.StatusForbidden
 		case errVoiceInviteTargetUnavailable:
@@ -175,6 +164,8 @@ func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 		InviteID:       model.NewId(),
 		RoomID:         room.RoomID,
 		RoomName:       room.Name,
+		RoomCreateAt:   room.CreateAt,
+		RoomGeneration: room.Generation,
 		InviterID:      inviterID,
 		TargetUserID:   targetUserID,
 		TargetUsername: target.Username,
@@ -235,6 +226,8 @@ func (p *Plugin) handleVoiceInviteResponse(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	p.voiceDomainMu.Lock()
+	defer p.voiceDomainMu.Unlock()
 	post, appErr := p.API.GetPost(body.PostID)
 	if appErr != nil || post == nil {
 		http.Error(w, errVoiceInvitePostInvalid.Error(), http.StatusNotFound)
@@ -259,6 +252,14 @@ func (p *Plugin) handleVoiceInviteResponse(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		http.Error(w, errVoiceInviteAlreadyAnswered.Error(), http.StatusConflict)
+		return
+	}
+	if err := (voiceRoomService{repo: p}).validateInviteResponse(invite); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errVoiceInviteExpired) {
+			status = http.StatusGone
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 
