@@ -195,12 +195,14 @@ func TestVoicePresenceIsExclusivePerUser(t *testing.T) {
 // A browser that crashes never reports leaving, so entries have to expire.
 func TestVoicePresenceExpires(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
-	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
-
+	legacyRooms, err := json.Marshal([]voiceRoom{{RoomID: "room-1", Name: "Standup", CreatorID: "creator"}})
+	require.NoError(t, err)
+	kv.values[voiceRoomsKey] = legacyRooms
 	stale := voicePresence{"room-1": {"ghost": {ExpiresAt: model.GetMillis() - 1, AudioOn: true}}}
 	encoded, err := json.Marshal(stale)
 	require.NoError(t, err)
 	kv.values[voicePresenceKey] = encoded
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 
 	rooms := decodeVoiceRoomViews(t, voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil))
 	assert.Empty(t, rooms[0].Participants)
@@ -208,22 +210,27 @@ func TestVoicePresenceExpires(t *testing.T) {
 
 func TestVoicePresenceHeartbeatKeepsAnEntryAlive(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
-	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
-
+	legacyRooms, err := json.Marshal([]voiceRoom{{RoomID: "room-1", Name: "Standup", CreatorID: "creator"}})
+	require.NoError(t, err)
+	kv.values[voiceRoomsKey] = legacyRooms
 	aboutToExpire := voicePresence{"room-1": {"talker": {ExpiresAt: model.GetMillis() + 1, AudioOn: true}}}
 	encoded, err := json.Marshal(aboutToExpire)
 	require.NoError(t, err)
 	kv.values[voicePresenceKey] = encoded
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 
 	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
 
-	var stored voicePresence
-	require.NoError(t, json.Unmarshal(kv.values[voicePresenceKey], &stored))
+	stored, _, err := p.readVoicePresence()
+	require.NoError(t, err)
 	assert.Greater(t, stored["room-1"]["talker"].ExpiresAt, model.GetMillis()+(voicePresenceTTLMillis/2))
 }
 
 func TestVoicePresenceReadsLegacyExpiryValues(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
+	rooms, err := json.Marshal([]voiceRoom{{RoomID: "room-1", Name: "Legacy"}})
+	require.NoError(t, err)
+	kv.values[voiceRoomsKey] = rooms
 	legacy := map[string]map[string]int64{
 		"room-1": {"talker": model.GetMillis() + voicePresenceTTLMillis},
 	}
@@ -238,8 +245,8 @@ func TestVoicePresenceReadsLegacyExpiryValues(t *testing.T) {
 
 func TestVoicePresenceRecoversFromCorruptValue(t *testing.T) {
 	p, kv := newVoiceRoomsPlugin()
-	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 	kv.values[voicePresenceKey] = []byte("{not json")
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, "creator", "room-1", "Standup").Code)
 
 	list := voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil)
 	require.Equal(t, http.StatusOK, list.Code)

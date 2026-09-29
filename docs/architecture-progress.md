@@ -30,12 +30,14 @@ Atualizado em 29 de setembro de 2026. Este documento acompanha o plano em [archi
 - [x] **Etapa 4 — Ciclo de vida do frontend:** render sem efeitos, mídia e cleanup idempotentes, payloads validados e timers descartados.
 - [x] **Etapa 5 — CallSession:** máquina de estados explícita, recursos WebRTC encapsulados, eventos atrasados rejeitados e projeção serializável no Redux.
 - [x] **Etapa 6 — VoiceSession e componentes:** separar mídia, sinalização, salas, convites e apresentação React.
-- [ ] **Etapa 7 — Domínio no servidor:** centralizar invariantes de salas, presença e convites em serviços de domínio.
+- [x] **Etapa 7 — Domínio no servidor:** centralizar invariantes de salas, presença e convites em serviços de domínio.
 - [ ] **Etapa 8 — Testes e pipeline:** contratos, E2E, cleanup determinístico e melhorias de pipeline.
 
-### Etapa 7 em andamento
+### Etapa 7 concluída
 
-- [x] Extrair serviços e interfaces para regras de salas, presença e convites; manter os formatos KV existentes.
+- [x] Extrair serviços e interfaces para regras de salas, presença e convites.
 - [x] Revalidar sala, geração, prazo e participantes ao responder convites; limpar presença na exclusão.
 - [x] Cobrir falhas de persistência e operações concorrentes no mesmo processo com testes Go `-race`.
-- [ ] Definir e testar uma estratégia de consistência entre nós do Mattermost: as duas chaves KV não oferecem transação atômica. O mutex atual serializa operações apenas dentro de uma instância; a exclusão compensa falhas de escrita restaurando a sala quando possível.
+- [x] Unificar salas e presença em `voice_domain_v1`: uma única gravação CAS torna heartbeat, troca de sala e exclusão atômicos entre instâncias. Os valores legados são importados uma vez na primeira leitura e preservados sem escrita posterior.
+
+Na atualização em cluster, todas as instâncias devem parar de executar a versão antiga antes de iniciar a nova. Uma versão antiga ainda escreveria nas chaves legadas, que deixam de ser a fonte de verdade após a migração. A chave canônica inválida provoca erro em vez de descarte silencioso dos dados.

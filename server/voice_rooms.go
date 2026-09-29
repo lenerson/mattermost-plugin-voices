@@ -11,17 +11,15 @@ import (
 )
 
 const (
-	// voiceRoomsKey holds the whole directory as a single JSON value. Listing is
-	// the hot path — every sidebar mount reads it — so one KVGet beats a KVList
-	// followed by a KVGet per room.
+	// voiceRoomsKey is the legacy room directory used only for migration.
 	voiceRoomsKey = "voice_rooms"
 
 	maxVoiceRooms       = 200
 	maxVoiceRoomNameLen = 64
 	maxVoiceRoomIDLen   = 128
 
-	// Every writer races on that one key, so writes are compare-and-set + retry.
-	voiceRoomsWriteAttempts = 5
+	// Every writer races on the canonical domain key, so writes retry CAS.
+	voiceRoomsWriteAttempts = 20
 )
 
 var (
@@ -53,9 +51,8 @@ func sortVoiceRooms(rooms []voiceRoom) {
 	})
 }
 
-// readVoiceRooms returns the directory plus the raw value it was decoded from,
-// which the caller hands back to KVSetWithOptions as the compare-and-set base.
-func (p *Plugin) readVoiceRooms() ([]voiceRoom, []byte, error) {
+// readLegacyVoiceRooms decodes the directory written by earlier plugin builds.
+func (p *Plugin) readLegacyVoiceRooms() ([]voiceRoom, []byte, error) {
 	raw, appErr := p.API.KVGet(voiceRoomsKey)
 	if appErr != nil {
 		return nil, nil, appErr
@@ -74,38 +71,21 @@ func (p *Plugin) readVoiceRooms() ([]voiceRoom, []byte, error) {
 	return rooms, raw, nil
 }
 
-// mutateVoiceRooms applies mutate under compare-and-set, retrying when another
-// writer won the race. mutate must return a new slice rather than edit its input.
+func (p *Plugin) readVoiceRooms() ([]voiceRoom, []byte, error) {
+	state, raw, err := p.readVoiceDomain()
+	return state.Rooms, raw, err
+}
+
+// mutateVoiceRooms updates the canonical room and presence snapshot by CAS.
 func (p *Plugin) mutateVoiceRooms(mutate func([]voiceRoom) ([]voiceRoom, error)) ([]voiceRoom, error) {
-	for attempt := 0; attempt < voiceRoomsWriteAttempts; attempt++ {
-		current, raw, err := p.readVoiceRooms()
-		if err != nil {
-			return nil, err
+	state, err := p.mutateVoiceDomain(func(state *voiceDomainState) error {
+		next, err := mutate(state.Rooms)
+		if err == nil {
+			state.Rooms = next
 		}
-
-		next, mutErr := mutate(current)
-		if mutErr != nil {
-			return nil, mutErr
-		}
-		sortVoiceRooms(next)
-
-		encoded, marshalErr := json.Marshal(next)
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-
-		ok, appErr := p.API.KVSetWithOptions(voiceRoomsKey, encoded, model.PluginKVSetOptions{
-			Atomic:   true,
-			OldValue: raw,
-		})
-		if appErr != nil {
-			return nil, appErr
-		}
-		if ok {
-			return next, nil
-		}
-	}
-	return nil, errVoiceRoomsContended
+		return err
+	})
+	return state.Rooms, err
 }
 
 func (p *Plugin) canManageAnyVoiceRoom(userID string) bool {
@@ -122,23 +102,22 @@ type voiceRoomView struct {
 	Participants []participant `json:"participants"`
 }
 
-func (p *Plugin) writeVoiceRoomsJSON(w http.ResponseWriter, rooms []voiceRoom) {
-	presence, _, err := p.readVoicePresence()
+func (p *Plugin) writeVoiceRoomsJSON(w http.ResponseWriter) {
+	state, _, err := p.readVoiceDomain()
 	if err != nil {
-		// Occupancy is not worth failing the whole listing over.
-		p.API.LogWarn("Could not read voice presence", "error", err.Error())
-		presence = voicePresence{}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	prunePresence(presence, model.GetMillis())
+	prunePresence(state.Presence, model.GetMillis())
 
-	views := make([]voiceRoomView, 0, len(rooms))
-	for _, room := range rooms {
+	views := make([]voiceRoomView, 0, len(state.Rooms))
+	for _, room := range state.Rooms {
 		views = append(views, voiceRoomView{
 			RoomID:       room.RoomID,
 			Name:         room.Name,
 			CreatorID:    room.CreatorID,
 			CreateAt:     room.CreateAt,
-			Participants: p.participantsFor(presence[room.RoomID]),
+			Participants: p.participantsFor(state.Presence[room.RoomID]),
 		})
 	}
 
@@ -169,13 +148,7 @@ func (p *Plugin) handleVoiceRooms(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Plugin) handleVoiceRoomsList(w http.ResponseWriter) {
-	rooms, _, err := p.readVoiceRooms()
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	sortVoiceRooms(rooms)
-	p.writeVoiceRoomsJSON(w, rooms)
+	p.writeVoiceRoomsJSON(w)
 }
 
 func (p *Plugin) handleVoiceRoomCreate(w http.ResponseWriter, r *http.Request) {
@@ -209,7 +182,7 @@ func (p *Plugin) handleVoiceRoomCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.voiceDomainMu.Lock()
-	rooms, err := (voiceRoomService{repo: p}).createRoom(userID, roomID, name)
+	_, err := (voiceRoomService{repo: p}).createRoom(userID, roomID, name)
 	p.voiceDomainMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errVoiceRoomsFull) {
@@ -220,7 +193,7 @@ func (p *Plugin) handleVoiceRoomCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.writeVoiceRoomsJSON(w, rooms)
+	p.writeVoiceRoomsJSON(w)
 }
 
 func (p *Plugin) handleVoiceRoomDelete(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +207,7 @@ func (p *Plugin) handleVoiceRoomDelete(w http.ResponseWriter, r *http.Request) {
 
 	canManageAny := p.canManageAnyVoiceRoom(userID)
 	p.voiceDomainMu.Lock()
-	rooms, departed, err := (voiceRoomService{repo: p}).deleteRoom(userID, roomID, canManageAny)
+	_, departed, err := (voiceRoomService{repo: p}).deleteRoom(userID, roomID, canManageAny)
 	p.voiceDomainMu.Unlock()
 	if err != nil {
 		if errors.Is(err, errVoiceRoomForbidden) {
@@ -251,5 +224,5 @@ func (p *Plugin) handleVoiceRoomDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	p.getSignalSessions().syncVoiceRoomParticipants(roomID, nil)
 
-	p.writeVoiceRoomsJSON(w, rooms)
+	p.writeVoiceRoomsJSON(w)
 }

@@ -8,36 +8,41 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type failingPresenceRepository struct {
-	rooms []voiceRoom
+type failingDomainRepository struct {
+	state voiceDomainState
 	err   error
 }
 
-func (repo *failingPresenceRepository) readVoiceRooms() ([]voiceRoom, []byte, error) {
-	return repo.rooms, nil, nil
+func (repo *failingDomainRepository) readVoiceDomain() (voiceDomainState, []byte, error) {
+	return repo.state, nil, nil
 }
 
-func (repo *failingPresenceRepository) readVoicePresence() (voicePresence, []byte, error) {
-	return voicePresence{}, nil, nil
-}
-
-func (repo *failingPresenceRepository) mutateVoiceRooms(mutate func([]voiceRoom) ([]voiceRoom, error)) ([]voiceRoom, error) {
-	next, err := mutate(repo.rooms)
-	if err == nil {
-		repo.rooms = next
+func (repo *failingDomainRepository) mutateVoiceDomain(mutate func(*voiceDomainState) error) (voiceDomainState, error) {
+	working := voiceDomainState{Rooms: append([]voiceRoom{}, repo.state.Rooms...), Presence: voicePresence{}}
+	for roomID, users := range repo.state.Presence {
+		working.Presence[roomID] = map[string]voicePresenceEntry{}
+		for userID, entry := range users {
+			working.Presence[roomID][userID] = entry
+		}
 	}
-	return next, err
+	if err := mutate(&working); err != nil {
+		return voiceDomainState{}, err
+	}
+	return voiceDomainState{}, repo.err
 }
 
-func (repo *failingPresenceRepository) mutateVoicePresence(func(voicePresence) error) (voicePresence, error) {
+func (repo *failingDomainRepository) mutateVoiceRooms(func([]voiceRoom) ([]voiceRoom, error)) ([]voiceRoom, error) {
 	return nil, repo.err
 }
 
-func TestVoiceRoomServiceRestoresRoomWhenPresenceCleanupFails(t *testing.T) {
-	storageErr := errors.New("presence storage unavailable")
-	repo := &failingPresenceRepository{
-		rooms: []voiceRoom{{RoomID: "room-1", CreatorID: "creator"}},
-		err:   storageErr,
+func TestVoiceRoomServicePreservesAtomicStateWhenDeleteFails(t *testing.T) {
+	storageErr := errors.New("domain storage unavailable")
+	repo := &failingDomainRepository{
+		state: voiceDomainState{
+			Rooms:    []voiceRoom{{RoomID: "room-1", CreatorID: "creator"}},
+			Presence: voicePresence{"room-1": {"talker": voicePresenceEntry{ExpiresAt: 9999999999999}}},
+		},
+		err: storageErr,
 	}
 
 	rooms, departed, err := (voiceRoomService{repo: repo}).deleteRoom("creator", "room-1", false)
@@ -45,6 +50,7 @@ func TestVoiceRoomServiceRestoresRoomWhenPresenceCleanupFails(t *testing.T) {
 	assert.ErrorIs(t, err, storageErr)
 	assert.Nil(t, rooms)
 	assert.Nil(t, departed)
-	require.Len(t, repo.rooms, 1)
-	assert.Equal(t, "room-1", repo.rooms[0].RoomID)
+	require.Len(t, repo.state.Rooms, 1)
+	assert.Equal(t, "room-1", repo.state.Rooms[0].RoomID)
+	assert.Contains(t, repo.state.Presence["room-1"], "talker")
 }

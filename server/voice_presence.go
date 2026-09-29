@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	// voicePresenceKey holds who is in which room, as one JSON value for the
-	// same reason the directory is one value: reading it is the hot path.
+	// voicePresenceKey is the legacy presence value used only for migration.
 	voicePresenceKey = "voice_presence"
 
 	// How long a heartbeat counts for. Leaving a room clears the entry outright,
@@ -63,7 +62,7 @@ type participant struct {
 	AudioOn   bool   `json:"audioOn"`
 }
 
-func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
+func (p *Plugin) readLegacyVoicePresence() (voicePresence, []byte, error) {
 	raw, appErr := p.API.KVGet(voicePresenceKey)
 	if appErr != nil {
 		return nil, nil, appErr
@@ -78,6 +77,11 @@ func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
 		return voicePresence{}, raw, nil
 	}
 	return presence, raw, nil
+}
+
+func (p *Plugin) readVoicePresence() (voicePresence, []byte, error) {
+	state, raw, err := p.readVoiceDomain()
+	return state.Presence, raw, err
 }
 
 func (p *Plugin) activeVoiceRoomParticipants(roomID string) ([]string, error) {
@@ -116,35 +120,10 @@ func prunePresence(presence voicePresence, now int64) bool {
 }
 
 func (p *Plugin) mutateVoicePresence(mutate func(voicePresence) error) (voicePresence, error) {
-	for attempt := 0; attempt < voiceRoomsWriteAttempts; attempt++ {
-		current, raw, err := p.readVoicePresence()
-		if err != nil {
-			return nil, err
-		}
-
-		prunePresence(current, model.GetMillis())
-
-		if mutErr := mutate(current); mutErr != nil {
-			return nil, mutErr
-		}
-
-		encoded, marshalErr := json.Marshal(current)
-		if marshalErr != nil {
-			return nil, marshalErr
-		}
-
-		ok, appErr := p.API.KVSetWithOptions(voicePresenceKey, encoded, model.PluginKVSetOptions{
-			Atomic:   true,
-			OldValue: raw,
-		})
-		if appErr != nil {
-			return nil, appErr
-		}
-		if ok {
-			return current, nil
-		}
-	}
-	return nil, errVoiceRoomsContended
+	state, err := p.mutateVoiceDomain(func(state *voiceDomainState) error {
+		return mutate(state.Presence)
+	})
+	return state.Presence, err
 }
 
 // participantsFor turns the ids held for a room into named participants,

@@ -11,10 +11,9 @@ var errVoiceRoomNotFound = errors.New("voice room not found")
 // voiceRoomRepository keeps the existing KV representation behind the domain
 // operation. Its compare-and-set mutations remain responsible for retries.
 type voiceRoomRepository interface {
-	readVoiceRooms() ([]voiceRoom, []byte, error)
-	readVoicePresence() (voicePresence, []byte, error)
+	readVoiceDomain() (voiceDomainState, []byte, error)
+	mutateVoiceDomain(func(*voiceDomainState) error) (voiceDomainState, error)
 	mutateVoiceRooms(func([]voiceRoom) ([]voiceRoom, error)) ([]voiceRoom, error)
-	mutateVoicePresence(func(voicePresence) error) (voicePresence, error)
 }
 
 type voicePresenceChange struct {
@@ -24,7 +23,7 @@ type voicePresenceChange struct {
 }
 
 // voiceRoomService owns the invariants shared by the room and presence APIs.
-// The plugin lock serializes related operations within this plugin process.
+// The repository CAS serializes related room and presence changes across nodes.
 type voiceRoomService struct {
 	repo voiceRoomRepository
 }
@@ -65,84 +64,57 @@ func (s voiceRoomService) createRoom(userID, roomID, name string) ([]voiceRoom, 
 }
 
 func (s voiceRoomService) deleteRoom(userID, roomID string, canManageAny bool) ([]voiceRoom, []string, error) {
-	var removed *voiceRoom
-	rooms, err := s.repo.mutateVoiceRooms(func(current []voiceRoom) ([]voiceRoom, error) {
-		removed = nil
-		next := make([]voiceRoom, 0, len(current))
-		for _, room := range current {
+	departed := []string{}
+	state, err := s.repo.mutateVoiceDomain(func(state *voiceDomainState) error {
+		departed = departed[:0]
+		next := make([]voiceRoom, 0, len(state.Rooms))
+		for _, room := range state.Rooms {
 			if room.RoomID != roomID {
 				next = append(next, room)
 				continue
 			}
 			if room.CreatorID != userID && !canManageAny {
-				return nil, errVoiceRoomForbidden
+				return errVoiceRoomForbidden
 			}
-			deleted := room
-			removed = &deleted
 		}
-		return next, nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-
-	departed := []string{}
-	_, err = s.repo.mutateVoicePresence(func(presence voicePresence) error {
-		departed = departed[:0]
-		for id := range presence[roomID] {
+		for id := range state.Presence[roomID] {
 			departed = append(departed, id)
 		}
-		delete(presence, roomID)
+		state.Rooms = next
+		delete(state.Presence, roomID)
 		return nil
 	})
-	if err != nil && removed != nil {
-		// Two KV keys cannot be committed together. Restore the directory if
-		// presence cleanup fails so a retry can complete the deletion.
-		_, rollbackErr := s.repo.mutateVoiceRooms(func(current []voiceRoom) ([]voiceRoom, error) {
-			if voiceRoomWithID(current, roomID) != nil {
-				return current, nil
-			}
-			return append(append([]voiceRoom{}, current...), *removed), nil
-		})
-		if rollbackErr != nil {
-			return nil, nil, errors.Join(err, rollbackErr)
-		}
-	}
 	if err != nil {
 		return nil, nil, err
 	}
-	return rooms, departed, err
+	return state.Rooms, departed, nil
 }
 
 func (s voiceRoomService) inviteRoom(inviterID, targetID, roomID string) (voiceRoom, error) {
-	rooms, _, err := s.repo.readVoiceRooms()
+	state, _, err := s.repo.readVoiceDomain()
 	if err != nil {
 		return voiceRoom{}, err
 	}
-	room := voiceRoomWithID(rooms, roomID)
+	room := voiceRoomWithID(state.Rooms, roomID)
 	if room == nil {
 		return voiceRoom{}, errVoiceInviteRoomNotFound
 	}
-	presence, _, err := s.repo.readVoicePresence()
-	if err != nil {
-		return voiceRoom{}, err
-	}
-	prunePresence(presence, model.GetMillis())
-	if userVoiceRoom(presence, inviterID) != roomID {
+	prunePresence(state.Presence, model.GetMillis())
+	if userVoiceRoom(state.Presence, inviterID) != roomID {
 		return voiceRoom{}, errVoiceInviteSenderNotInRoom
 	}
-	if userVoiceRoom(presence, targetID) == roomID {
+	if userVoiceRoom(state.Presence, targetID) == roomID {
 		return voiceRoom{}, errVoiceInviteTargetUnavailable
 	}
 	return *room, nil
 }
 
 func (s voiceRoomService) validateInviteRoom(invite voiceInviteRecord) error {
-	rooms, _, err := s.repo.readVoiceRooms()
+	state, _, err := s.repo.readVoiceDomain()
 	if err != nil {
 		return err
 	}
-	room := voiceRoomWithID(rooms, invite.RoomID)
+	room := voiceRoomWithID(state.Rooms, invite.RoomID)
 	if room == nil || room.CreateAt != invite.RoomCreateAt || room.Generation != invite.RoomGeneration {
 		return errVoiceInviteExpired
 	}
@@ -150,33 +122,28 @@ func (s voiceRoomService) validateInviteRoom(invite voiceInviteRecord) error {
 }
 
 func (s voiceRoomService) validateInviteResponse(invite voiceInviteRecord) error {
-	if err := s.validateInviteRoom(invite); err != nil {
-		return err
-	}
-	presence, _, err := s.repo.readVoicePresence()
+	state, _, err := s.repo.readVoiceDomain()
 	if err != nil {
 		return err
 	}
-	prunePresence(presence, model.GetMillis())
-	if userVoiceRoom(presence, invite.InviterID) != invite.RoomID || userVoiceRoom(presence, invite.TargetUserID) == invite.RoomID {
+	room := voiceRoomWithID(state.Rooms, invite.RoomID)
+	if room == nil || room.CreateAt != invite.RoomCreateAt || room.Generation != invite.RoomGeneration {
+		return errVoiceInviteExpired
+	}
+	prunePresence(state.Presence, model.GetMillis())
+	if userVoiceRoom(state.Presence, invite.InviterID) != invite.RoomID || userVoiceRoom(state.Presence, invite.TargetUserID) == invite.RoomID {
 		return errVoiceInviteExpired
 	}
 	return nil
 }
 
 func (s voiceRoomService) setPresence(userID, roomID string, audioOn bool) (voicePresenceChange, error) {
-	if roomID != "" {
-		rooms, _, err := s.repo.readVoiceRooms()
-		if err != nil {
-			return voicePresenceChange{}, err
-		}
-		if voiceRoomWithID(rooms, roomID) == nil {
-			return voicePresenceChange{}, errVoiceRoomNotFound
-		}
-	}
-
 	change := voicePresenceChange{}
-	_, err := s.repo.mutateVoicePresence(func(presence voicePresence) error {
+	_, err := s.repo.mutateVoiceDomain(func(state *voiceDomainState) error {
+		if roomID != "" && voiceRoomWithID(state.Rooms, roomID) == nil {
+			return errVoiceRoomNotFound
+		}
+		presence := state.Presence
 		// A CAS retry must report the previous state from the successful read.
 		change = voicePresenceChange{}
 		for existing, users := range presence {
