@@ -1,13 +1,35 @@
 package main
 
 import (
+	"errors"
 	"net/http"
+	"sync"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type failingInviteGateway struct {
+	*Plugin
+	failCreate bool
+	failUpdate bool
+}
+
+func (g failingInviteGateway) inviteCreatePost(post *model.Post) (*model.Post, error) {
+	if g.failCreate {
+		return nil, errors.New("post unavailable")
+	}
+	return g.Plugin.inviteCreatePost(post)
+}
+
+func (g failingInviteGateway) inviteUpdatePost(post *model.Post) error {
+	if g.failUpdate {
+		return errors.New("post unavailable")
+	}
+	return g.Plugin.inviteUpdatePost(post)
+}
 
 func inviteToVoiceRoom(p *Plugin, inviterID, targetUserID, roomID string) int {
 	return voiceRoomsRequest(p, http.MethodPost, "/v1/voice/invite", inviterID, map[string]string{
@@ -184,4 +206,70 @@ func TestVoiceInviteResponseRejectsTargetAlreadyInRoom(t *testing.T) {
 	status := respondToVoiceInvite(p, "guest", payload["postId"].(string), payload["inviteId"].(string), voiceInviteAccepted)
 
 	assert.Equal(t, http.StatusGone, status)
+}
+
+func TestVoiceInvitePostFailureDoesNotPublishInvitation(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	before := len(kv.webSocketEvents)
+	service := voiceInviteService{rooms: voiceRoomService{repo: p}, gateway: failingInviteGateway{Plugin: p, failCreate: true}}
+
+	err := service.send("inviter", "guest", "room-1")
+
+	assert.ErrorIs(t, err, errVoiceInviteCreatePost)
+	assert.Empty(t, kv.posts)
+	assert.Len(t, kv.webSocketEvents, before)
+}
+
+func TestVoiceInviteUpdateFailurePreservesPendingInvitation(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "guest", "room-1"))
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+	service := voiceInviteService{rooms: voiceRoomService{repo: p}, gateway: failingInviteGateway{Plugin: p, failUpdate: true}}
+
+	err := service.respond("guest", postID, inviteID, voiceInviteAccepted)
+
+	assert.ErrorIs(t, err, errVoiceInviteUpdatePost)
+	stored, parseErr := voiceInviteFromPost(kv.posts[postID])
+	require.NoError(t, parseErr)
+	assert.Equal(t, voiceInvitePending, stored.Status)
+}
+
+func TestVoiceInviteResponseConcurrentWithRoomDeletion(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(p, "inviter", "guest", "room-1"))
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	workers.Add(2)
+	var answerStatus, deleteStatus int
+	go func() {
+		defer workers.Done()
+		<-start
+		answerStatus = respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteAccepted)
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		deleteStatus = voiceRoomsRequest(p, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil).Code
+	}()
+	close(start)
+	workers.Wait()
+
+	assert.Equal(t, http.StatusOK, deleteStatus)
+	assert.Contains(t, []int{http.StatusNoContent, http.StatusGone}, answerStatus)
+	assert.Equal(t, http.StatusGone, respondToVoiceInvite(p, "guest", postID, inviteID, voiceInviteAccepted))
+	presence, _, err := p.readVoicePresence()
+	require.NoError(t, err)
+	assert.Empty(t, presence["room-1"])
 }

@@ -1,6 +1,6 @@
 # Progresso do Plano Arquitetural
 
-Atualizado em 13 de setembro de 2026. Este documento acompanha o plano em [architecture-execution-plan.md](architecture-execution-plan.md).
+Atualizado em 29 de setembro de 2026. Este documento acompanha o plano em [architecture-execution-plan.md](architecture-execution-plan.md).
 
 ## Etapas concluídas
 
@@ -32,3 +32,10 @@ Atualizado em 13 de setembro de 2026. Este documento acompanha o plano em [archi
 - [x] **Etapa 6 — VoiceSession e componentes:** separar mídia, sinalização, salas, convites e apresentação React.
 - [ ] **Etapa 7 — Domínio no servidor:** centralizar invariantes de salas, presença e convites em serviços de domínio.
 - [ ] **Etapa 8 — Testes e pipeline:** contratos, E2E, cleanup determinístico e melhorias de pipeline.
+
+### Etapa 7 em andamento
+
+- [x] Extrair serviços e interfaces para regras de salas, presença e convites; manter os formatos KV existentes.
+- [x] Revalidar sala, geração, prazo e participantes ao responder convites; limpar presença na exclusão.
+- [x] Cobrir falhas de persistência e operações concorrentes no mesmo processo com testes Go `-race`.
+- [ ] Definir e testar uma estratégia de consistência entre nós do Mattermost: as duas chaves KV não oferecem transação atômica. O mutex atual serializa operações apenas dentro de uma instância; a exclusão compensa falhas de escrita restaurando a sala quando possível.

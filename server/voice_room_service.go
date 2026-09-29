@@ -29,6 +29,24 @@ type voiceRoomService struct {
 	repo voiceRoomRepository
 }
 
+func voiceRoomWithID(rooms []voiceRoom, roomID string) *voiceRoom {
+	for i := range rooms {
+		if rooms[i].RoomID == roomID {
+			return &rooms[i]
+		}
+	}
+	return nil
+}
+
+func userVoiceRoom(presence voicePresence, userID string) string {
+	for roomID, users := range presence {
+		if _, ok := users[userID]; ok {
+			return roomID
+		}
+	}
+	return ""
+}
+
 func (s voiceRoomService) createRoom(userID, roomID, name string) ([]voiceRoom, error) {
 	return s.repo.mutateVoiceRooms(func(current []voiceRoom) ([]voiceRoom, error) {
 		for _, room := range current {
@@ -119,7 +137,7 @@ func (s voiceRoomService) inviteRoom(inviterID, targetID, roomID string) (voiceR
 	return *room, nil
 }
 
-func (s voiceRoomService) validateInviteResponse(invite voiceInviteRecord) error {
+func (s voiceRoomService) validateInviteRoom(invite voiceInviteRecord) error {
 	rooms, _, err := s.repo.readVoiceRooms()
 	if err != nil {
 		return err
@@ -127,6 +145,13 @@ func (s voiceRoomService) validateInviteResponse(invite voiceInviteRecord) error
 	room := voiceRoomWithID(rooms, invite.RoomID)
 	if room == nil || room.CreateAt != invite.RoomCreateAt || room.Generation != invite.RoomGeneration {
 		return errVoiceInviteExpired
+	}
+	return nil
+}
+
+func (s voiceRoomService) validateInviteResponse(invite voiceInviteRecord) error {
+	if err := s.validateInviteRoom(invite); err != nil {
+		return err
 	}
 	presence, _, err := s.repo.readVoicePresence()
 	if err != nil {

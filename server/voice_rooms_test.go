@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -18,6 +19,7 @@ import (
 // fakeKV backs the plugintest API with a store that honours compare-and-set, so
 // the retry path in mutateVoiceRooms runs for real instead of being stubbed out.
 type fakeKV struct {
+	mu                sync.Mutex
 	values            map[string][]byte
 	posts             map[string]*model.Post
 	webSocketEvents   []string
@@ -37,6 +39,8 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 
 	api.On("KVGet", mock.AnythingOfType("string")).Return(
 		func(key string) []byte {
+			kv.mu.Lock()
+			defer kv.mu.Unlock()
 			return kv.values[key]
 		},
 		func(key string) *model.AppError {
@@ -46,6 +50,8 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 
 	api.On("KVSetWithOptions", mock.AnythingOfType("string"), mock.Anything, mock.Anything).Return(
 		func(key string, value []byte, options model.PluginKVSetOptions) bool {
+			kv.mu.Lock()
+			defer kv.mu.Unlock()
 			if options.Atomic && !bytes.Equal(kv.values[key], options.OldValue) {
 				return false
 			}
@@ -70,6 +76,8 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 
 	api.On("LogWarn", mock.Anything, mock.Anything, mock.Anything).Maybe()
 	api.On("PublishWebSocketEvent", mock.AnythingOfType("string"), mock.Anything, mock.Anything).Run(func(args mock.Arguments) {
+		kv.mu.Lock()
+		defer kv.mu.Unlock()
 		kv.webSocketEvents = append(kv.webSocketEvents, args.String(0))
 		kv.webSocketPayloads = append(kv.webSocketPayloads, args.Get(1).(map[string]interface{}))
 		broadcast, _ := args.Get(2).(*model.WebsocketBroadcast)
@@ -293,6 +301,39 @@ func TestVoiceRoomDeleteClearsPresenceAndNotifiesParticipants(t *testing.T) {
 	assert.Equal(t, []string{voicePresenceEvent}, kv.webSocketEvents[eventsBefore:])
 	assert.Equal(t, "talker", kv.webSocketPayloads[eventsBefore]["userId"])
 	assert.Equal(t, http.StatusNotFound, heartbeat(p, "talker", "room-1").Code)
+}
+
+func TestVoiceRoomConcurrentHeartbeatAndDeleteLeavesNoOrphanedPresence(t *testing.T) {
+	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Room").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	results := make(chan int, 12)
+	for i := 0; i < 12; i++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			<-start
+			results <- heartbeat(p, "talker", "room-1").Code
+		}()
+	}
+	close(start)
+	deleted := voiceRoomsRequest(p, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil)
+	workers.Wait()
+	close(results)
+
+	require.Equal(t, http.StatusOK, deleted.Code)
+	for code := range results {
+		assert.Contains(t, []int{http.StatusOK, http.StatusNotFound}, code)
+	}
+	rooms, _, err := p.readVoiceRooms()
+	require.NoError(t, err)
+	assert.Empty(t, rooms)
+	presence, _, err := p.readVoicePresence()
+	require.NoError(t, err)
+	assert.Empty(t, presence["room-1"])
 }
 
 func TestVoiceRoomRejectedDeleteKeepsPresence(t *testing.T) {

@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -28,6 +27,7 @@ var (
 	errVoiceInvitePostInvalid       = errors.New("invalid voice invitation")
 	errVoiceInviteExpired           = errors.New("voice invitation expired")
 	errVoiceInviteAlreadyAnswered   = errors.New("voice invitation already answered")
+	errVoiceInviteWrongTarget       = errors.New("only the invited user can answer")
 )
 
 type voiceInviteRecord struct {
@@ -83,24 +83,6 @@ func voiceInviteFromPost(post *model.Post) (voiceInviteRecord, error) {
 	return invite, nil
 }
 
-func voiceRoomWithID(rooms []voiceRoom, roomID string) *voiceRoom {
-	for i := range rooms {
-		if rooms[i].RoomID == roomID {
-			return &rooms[i]
-		}
-	}
-	return nil
-}
-
-func userVoiceRoom(presence voicePresence, userID string) string {
-	for roomID, users := range presence {
-		if _, ok := users[userID]; ok {
-			return roomID
-		}
-	}
-	return ""
-}
-
 func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 	if !p.isUserAuthenticated(r) {
 		http.Error(w, "not authenticated", http.StatusForbidden)
@@ -127,78 +109,13 @@ func (p *Plugin) handleVoiceInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid roomId or targetUserId", http.StatusBadRequest)
 		return
 	}
-	if inviterID == targetUserID {
-		http.Error(w, errVoiceInviteSelf.Error(), http.StatusBadRequest)
-		return
-	}
-
-	target, appErr := p.API.GetUser(targetUserID)
-	if appErr != nil || target == nil || target.DeleteAt != 0 {
-		http.Error(w, "invited user not found", http.StatusNotFound)
-		return
-	}
-
 	p.voiceDomainMu.Lock()
 	defer p.voiceDomainMu.Unlock()
-	room, err := (voiceRoomService{repo: p}).inviteRoom(inviterID, targetUserID, roomID)
+	err := (voiceInviteService{rooms: voiceRoomService{repo: p}, gateway: p}).send(inviterID, targetUserID, roomID)
 	if err != nil {
-		status := http.StatusInternalServerError
-		switch err {
-		case errVoiceInviteRoomNotFound:
-			status = http.StatusNotFound
-		case errVoiceInviteSenderNotInRoom:
-			status = http.StatusForbidden
-		case errVoiceInviteTargetUnavailable:
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
+		http.Error(w, err.Error(), voiceInviteErrorStatus(err))
 		return
 	}
-
-	inviter, appErr := p.API.GetUser(inviterID)
-	if appErr != nil || inviter == nil || inviter.DeleteAt != 0 {
-		http.Error(w, "inviting user not found", http.StatusNotFound)
-		return
-	}
-	invite := voiceInviteRecord{
-		InviteID:       model.NewId(),
-		RoomID:         room.RoomID,
-		RoomName:       room.Name,
-		RoomCreateAt:   room.CreateAt,
-		RoomGeneration: room.Generation,
-		InviterID:      inviterID,
-		TargetUserID:   targetUserID,
-		TargetUsername: target.Username,
-		ExpiresAt:      model.GetMillis() + voiceInviteTTLMillis,
-		Status:         voiceInvitePending,
-	}
-	invite.InviterUsername = inviter.Username
-	invite.InviterFirstName = inviter.FirstName
-	invite.InviterLastName = inviter.LastName
-
-	directChannel, appErr := p.API.GetDirectChannel(inviterID, targetUserID)
-	if appErr != nil || directChannel == nil {
-		http.Error(w, "could not create direct channel", http.StatusInternalServerError)
-		return
-	}
-	message := fmt.Sprintf("**Voice channel invitation** — @%s, @%s invited you to join **%s**. This invitation expires in five minutes.", target.Username, invite.InviterUsername, room.Name)
-	createdPost, appErr := p.API.CreatePost(&model.Post{
-		UserId:    inviterID,
-		ChannelId: directChannel.Id,
-		Message:   message,
-		Type:      voiceInvitePostType,
-		Props: map[string]interface{}{
-			voiceInvitePropsKey: invite.asMap(),
-		},
-	})
-	if appErr != nil || createdPost == nil {
-		http.Error(w, "could not create invitation message", http.StatusInternalServerError)
-		return
-	}
-
-	payload := invite.asMap()
-	payload["postId"] = createdPost.Id
-	p.API.PublishWebSocketEvent(voiceInviteEvent, payload, &model.WebsocketBroadcast{UserId: targetUserID})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -228,46 +145,44 @@ func (p *Plugin) handleVoiceInviteResponse(w http.ResponseWriter, r *http.Reques
 
 	p.voiceDomainMu.Lock()
 	defer p.voiceDomainMu.Unlock()
-	post, appErr := p.API.GetPost(body.PostID)
-	if appErr != nil || post == nil {
-		http.Error(w, errVoiceInvitePostInvalid.Error(), http.StatusNotFound)
-		return
-	}
-	invite, err := voiceInviteFromPost(post)
-	if err != nil || invite.InviteID != body.InviteID {
-		http.Error(w, errVoiceInvitePostInvalid.Error(), http.StatusBadRequest)
-		return
-	}
-	if invite.TargetUserID != r.Header.Get("Mattermost-User-Id") {
-		http.Error(w, "only the invited user can answer", http.StatusForbidden)
-		return
-	}
-	if invite.ExpiresAt <= model.GetMillis() {
-		http.Error(w, errVoiceInviteExpired.Error(), http.StatusGone)
-		return
-	}
-	if invite.Status != voiceInvitePending {
-		if invite.Status == body.Decision {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		http.Error(w, errVoiceInviteAlreadyAnswered.Error(), http.StatusConflict)
-		return
-	}
-	if err := (voiceRoomService{repo: p}).validateInviteResponse(invite); err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, errVoiceInviteExpired) {
-			status = http.StatusGone
-		}
-		http.Error(w, err.Error(), status)
-		return
-	}
-
-	invite.Status = body.Decision
-	post.Props[voiceInvitePropsKey] = invite.asMap()
-	if _, appErr = p.API.UpdatePost(post); appErr != nil {
-		http.Error(w, "could not update invitation message", http.StatusInternalServerError)
+	err := (voiceInviteService{rooms: voiceRoomService{repo: p}, gateway: p}).respond(
+		r.Header.Get("Mattermost-User-Id"), body.PostID, body.InviteID, body.Decision,
+	)
+	if err != nil {
+		http.Error(w, err.Error(), voiceInviteResponseErrorStatus(err))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func voiceInviteErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errVoiceInviteSelf):
+		return http.StatusBadRequest
+	case errors.Is(err, errVoiceInviteRoomNotFound), errors.Is(err, errVoiceInviteUserNotFound), errors.Is(err, errVoiceInviteInviterNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errVoiceInviteSenderNotInRoom):
+		return http.StatusForbidden
+	case errors.Is(err, errVoiceInviteTargetUnavailable):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func voiceInviteResponseErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, errVoiceInvitePostNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errVoiceInvitePostInvalid):
+		return http.StatusBadRequest
+	case errors.Is(err, errVoiceInviteWrongTarget):
+		return http.StatusForbidden
+	case errors.Is(err, errVoiceInviteExpired):
+		return http.StatusGone
+	case errors.Is(err, errVoiceInviteAlreadyAnswered):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
 }
