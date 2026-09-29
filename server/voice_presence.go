@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -202,73 +203,35 @@ func (p *Plugin) handleVoicePresence(w http.ResponseWriter, r *http.Request) {
 		audioOn = *body.AudioOn
 	}
 
-	previousRoomID := ""
-	previousAudioOn := false
-	hadPreviousPresence := false
-	_, err := p.mutateVoicePresence(func(presence voicePresence) error {
-		// mutateVoicePresence can retry after a compare-and-set conflict. Reset
-		// these values so the event below describes the successful attempt.
-		previousRoomID = ""
-		previousAudioOn = false
-		hadPreviousPresence = false
-
-		// One room at a time: a heartbeat for a new room is also a departure
-		// from the previous one, which is what a reconnect or a second tab
-		// would otherwise leave behind.
-		for existing, users := range presence {
-			if entry, ok := users[userID]; ok {
-				previousRoomID = existing
-				previousAudioOn = entry.AudioOn
-				hadPreviousPresence = true
-			}
-			if existing != roomID {
-				delete(users, userID)
-			}
-			if len(users) == 0 {
-				delete(presence, existing)
-			}
-		}
-
-		if roomID == "" {
-			return nil
-		}
-
-		if presence[roomID] == nil {
-			presence[roomID] = map[string]voicePresenceEntry{}
-		}
-		if _, already := presence[roomID][userID]; !already && len(presence[roomID]) >= maxVoicePresencePerRoom {
-			return errVoiceRoomsFull
-		}
-		presence[roomID][userID] = voicePresenceEntry{
-			ExpiresAt: model.GetMillis() + voicePresenceTTLMillis,
-			AudioOn:   audioOn,
-		}
-		return nil
-	})
+	p.voiceDomainMu.Lock()
+	change, err := (voiceRoomService{repo: p}).setPresence(userID, roomID, audioOn)
+	p.voiceDomainMu.Unlock()
 	if err != nil {
 		status := http.StatusInternalServerError
-		if err == errVoiceRoomsFull {
+		if errors.Is(err, errVoiceRoomsFull) {
 			status = http.StatusConflict
+		} else if errors.Is(err, errVoiceRoomNotFound) {
+			status = http.StatusNotFound
 		}
 		http.Error(w, err.Error(), status)
 		return
 	}
 
-	membershipChanged := previousRoomID != roomID
-	microphoneChanged := hadPreviousPresence && roomID != "" && previousRoomID == roomID && previousAudioOn != audioOn
+	membershipChanged := change.PreviousRoomID != roomID
+	microphoneChanged := change.HadPreviousPresence && roomID != "" && change.PreviousRoomID == roomID && change.PreviousAudioOn != audioOn
 	if membershipChanged || microphoneChanged {
 		p.API.PublishWebSocketEvent(voicePresenceEvent, map[string]interface{}{
 			"userId":         userID,
-			"previousRoomId": previousRoomID,
+			"previousRoomId": change.PreviousRoomID,
 			"roomId":         roomID,
 			"audioOn":        audioOn,
 		}, &model.WebsocketBroadcast{})
 	}
 
-	if previousRoomID != "" {
-		participants, participantsErr := p.activeVoiceRoomParticipants(previousRoomID)
+	if change.PreviousRoomID != "" {
+		participants, participantsErr := p.activeVoiceRoomParticipants(change.PreviousRoomID)
 		if participantsErr == nil {
-			p.getSignalSessions().syncVoiceRoomParticipants(previousRoomID, participants)
+			p.getSignalSessions().syncVoiceRoomParticipants(change.PreviousRoomID, participants)
 		}
 	}
 	if roomID != "" {

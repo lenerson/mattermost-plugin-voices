@@ -28,6 +28,7 @@ type Plugin struct {
 	signalSessions     *signalSessionStore
 	signalLimitsOnce   sync.Once
 	signalLimits       *signalLimiter
+	voiceDomainMu      sync.Mutex
 }
 
 func (p *Plugin) getSignalLimits() *signalLimiter {

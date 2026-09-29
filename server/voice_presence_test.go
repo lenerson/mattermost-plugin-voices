@@ -57,6 +57,31 @@ func TestVoicePresenceMethodNotAllowed(t *testing.T) {
 	assert.Equal(t, http.StatusMethodNotAllowed, w.Code)
 }
 
+func TestVoicePresenceRejectsUnknownRoomWithoutChangingMembership(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	eventsBefore := len(kv.webSocketEvents)
+
+	response := heartbeat(p, "talker", "missing-room")
+
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	rooms := decodeVoiceRoomViews(t, voiceRoomsRequest(p, http.MethodGet, "/v1/voice/rooms", "outsider", nil))
+	require.Len(t, rooms, 1)
+	assert.Equal(t, []string{"talker"}, participantIDs(rooms[0]))
+	assert.Len(t, kv.webSocketEvents, eventsBefore)
+}
+
+func TestVoicePresenceRejectsUnknownRoomForNewParticipant(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+
+	response := heartbeat(p, "talker", "missing-room")
+
+	assert.Equal(t, http.StatusNotFound, response.Code)
+	assert.Empty(t, kv.values[voicePresenceKey])
+	assert.Empty(t, kv.webSocketEvents)
+}
+
 // The point of the whole feature: occupancy is visible to somebody who is not
 // in the room and never has been.
 func TestVoicePresenceIsVisibleToAnOutsider(t *testing.T) {
