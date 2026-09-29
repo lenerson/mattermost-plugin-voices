@@ -164,6 +164,7 @@ func TestSignalSessionCloseRequiresOwner(t *testing.T) {
 
 func TestSignalSessionCreateForVoiceRoomUsesActivePresence(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
 	require.Equal(t, http.StatusOK, heartbeat(p, "user-1", "room-1").Code)
 	require.Equal(t, http.StatusOK, heartbeat(p, "user-2", "room-1").Code)
 
@@ -181,6 +182,7 @@ func TestSignalSessionCreateForVoiceRoomUsesActivePresence(t *testing.T) {
 
 func TestSignalSessionCreateForVoiceRoomRejectsAbsentUser(t *testing.T) {
 	p, _ := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "Standup").Code)
 	require.Equal(t, http.StatusOK, heartbeat(p, "present", "room-1").Code)
 
 	w := voiceRoomsRequest(p, http.MethodPost, "/v1/signal/sessions", "outsider", map[string]string{"callId": "voice-call", "roomId": "room-1"})

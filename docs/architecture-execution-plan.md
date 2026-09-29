@@ -100,7 +100,7 @@ Invariantes obrigatórios:
 - Aceite revalida sala, convite, expiração e participantes.
 - Operações concorrentes não deixam estado parcial.
 
-O formato atual do KV permanece inicialmente atrás dos repositories. Uma migração para chaves por sala dependerá de teste de carga ou requisito comprovado de escala.
+As chaves KV legadas permanecem disponíveis para importação na primeira leitura. Salas e presença passam a compartilhar uma chave canônica com CAS, necessária para exclusão e heartbeat atômicos entre instâncias; não há migração para chaves por sala. Em cluster, não execute simultaneamente versões antigas e novas durante a atualização.
 
 ## Etapa 8 — Testes e pipeline
 
