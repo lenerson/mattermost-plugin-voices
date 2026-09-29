@@ -52,6 +52,102 @@ func TestVoiceDomainRejectsCorruptCanonicalStateWithoutOverwritingIt(t *testing.
 	assert.Equal(t, []byte(`{"version":1,"rooms":[]}`), kv.values[voiceDomainKey])
 }
 
+func TestVoiceDomainRejectsMalformedOrUnsupportedCanonicalState(t *testing.T) {
+	for _, raw := range []string{"{invalid", "null", `{"version":2,"rooms":[],"presence":{}}`} {
+		t.Run(raw, func(t *testing.T) {
+			p, kv := newVoiceRoomsPlugin()
+			kv.values[voiceDomainKey] = []byte(raw)
+
+			_, _, err := p.readVoiceDomain()
+
+			assert.ErrorIs(t, err, errVoiceDomainCorrupt)
+			assert.Equal(t, []byte(raw), kv.values[voiceDomainKey])
+		})
+	}
+}
+
+func TestVoiceDomainImportFailsClosedOnKVReadOrWriteError(t *testing.T) {
+	for _, key := range []string{voiceDomainKey, voiceRoomsKey, voicePresenceKey} {
+		t.Run("read-"+key, func(t *testing.T) {
+			p, kv := newVoiceRoomsPlugin()
+			kv.getErrorKey = key
+
+			_, _, err := p.readVoiceDomain()
+
+			require.Error(t, err)
+			assert.Empty(t, kv.values[voiceDomainKey])
+		})
+	}
+	t.Run("write-canonical", func(t *testing.T) {
+		p, kv := newVoiceRoomsPlugin()
+		kv.setErrorKey = voiceDomainKey
+
+		_, _, err := p.readVoiceDomain()
+
+		require.Error(t, err)
+		assert.Empty(t, kv.values[voiceDomainKey])
+	})
+}
+
+func TestVoiceDomainRetriesCASConflictAndPreservesCommittedState(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "One").Code)
+	kv.conflictsLeft = 2
+
+	response := createVoiceRoom(p, testAdmin, "room-2", "Two")
+
+	require.Equal(t, http.StatusOK, response.Code)
+	assert.Zero(t, kv.conflictsLeft)
+	state, _, err := p.readVoiceDomain()
+	require.NoError(t, err)
+	assert.Len(t, state.Rooms, 2)
+}
+
+func TestVoiceDomainCASExhaustionLeavesStateUnchanged(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "One").Code)
+	before := append([]byte(nil), kv.values[voiceDomainKey]...)
+	kv.alwaysConflict = true
+
+	response := createVoiceRoom(p, testAdmin, "room-2", "Two")
+
+	assert.Equal(t, http.StatusInternalServerError, response.Code)
+	assert.Equal(t, before, kv.values[voiceDomainKey])
+}
+
+func TestVoiceDomainFailedRoomSwitchPreservesOldMembership(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "One").Code)
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-2", "Two").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	kv.setErrorKey = voiceDomainKey
+
+	response := heartbeat(p, "talker", "room-2")
+
+	assert.Equal(t, http.StatusInternalServerError, response.Code)
+	kv.setErrorKey = ""
+	state, _, err := p.readVoiceDomain()
+	require.NoError(t, err)
+	assert.Contains(t, state.Presence["room-1"], "talker")
+	assert.NotContains(t, state.Presence["room-2"], "talker")
+}
+
+func TestVoiceDomainFailedDeletePreservesRoomAndPresence(t *testing.T) {
+	p, kv := newVoiceRoomsPlugin()
+	require.Equal(t, http.StatusOK, createVoiceRoom(p, testAdmin, "room-1", "One").Code)
+	require.Equal(t, http.StatusOK, heartbeat(p, "talker", "room-1").Code)
+	kv.setErrorKey = voiceDomainKey
+
+	response := voiceRoomsRequest(p, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil)
+
+	assert.Equal(t, http.StatusInternalServerError, response.Code)
+	kv.setErrorKey = ""
+	state, _, err := p.readVoiceDomain()
+	require.NoError(t, err)
+	assert.Len(t, state.Rooms, 1)
+	assert.Contains(t, state.Presence["room-1"], "talker")
+}
+
 func TestVoiceDomainConcurrentLegacyImportUsesOneCanonicalValue(t *testing.T) {
 	first, kv := newVoiceRoomsPlugin()
 	second := secondVoicePlugin(first)

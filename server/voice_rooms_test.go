@@ -21,6 +21,10 @@ import (
 type fakeKV struct {
 	mu                sync.Mutex
 	values            map[string][]byte
+	getErrorKey       string
+	setErrorKey       string
+	conflictsLeft     int
+	alwaysConflict    bool
 	posts             map[string]*model.Post
 	webSocketEvents   []string
 	webSocketPayloads []map[string]interface{}
@@ -44,6 +48,11 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 			return kv.values[key]
 		},
 		func(key string) *model.AppError {
+			kv.mu.Lock()
+			defer kv.mu.Unlock()
+			if key == kv.getErrorKey {
+				return &model.AppError{Message: "KV read unavailable"}
+			}
 			return nil
 		},
 	)
@@ -52,6 +61,13 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 		func(key string, value []byte, options model.PluginKVSetOptions) bool {
 			kv.mu.Lock()
 			defer kv.mu.Unlock()
+			if key == kv.setErrorKey || kv.alwaysConflict {
+				return false
+			}
+			if key == voiceDomainKey && kv.conflictsLeft > 0 {
+				kv.conflictsLeft--
+				return false
+			}
 			if options.Atomic && !bytes.Equal(kv.values[key], options.OldValue) {
 				return false
 			}
@@ -59,6 +75,11 @@ func newVoiceRoomsPlugin(admins ...string) (*Plugin, *fakeKV) {
 			return true
 		},
 		func(key string, value []byte, options model.PluginKVSetOptions) *model.AppError {
+			kv.mu.Lock()
+			defer kv.mu.Unlock()
+			if key == kv.setErrorKey {
+				return &model.AppError{Message: "KV write unavailable"}
+			}
 			return nil
 		},
 	)

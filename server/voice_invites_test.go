@@ -17,6 +17,32 @@ type failingInviteGateway struct {
 	failUpdate bool
 }
 
+type pausedInviteGateway struct {
+	*Plugin
+	pauseCreate bool
+	pauseUpdate bool
+	started     chan struct{}
+	resume      chan struct{}
+	once        sync.Once
+}
+
+func (g *pausedInviteGateway) waitIfPaused(paused bool) {
+	if paused {
+		g.once.Do(func() { close(g.started) })
+		<-g.resume
+	}
+}
+
+func (g *pausedInviteGateway) inviteCreatePost(post *model.Post) (*model.Post, error) {
+	g.waitIfPaused(g.pauseCreate)
+	return g.Plugin.inviteCreatePost(post)
+}
+
+func (g *pausedInviteGateway) inviteUpdatePost(post *model.Post) error {
+	g.waitIfPaused(g.pauseUpdate)
+	return g.Plugin.inviteUpdatePost(post)
+}
+
 func (g failingInviteGateway) inviteCreatePost(post *model.Post) (*model.Post, error) {
 	if g.failCreate {
 		return nil, errors.New("post unavailable")
@@ -272,4 +298,68 @@ func TestVoiceInviteResponseConcurrentWithRoomDeletion(t *testing.T) {
 	presence, _, err := p.readVoicePresence()
 	require.NoError(t, err)
 	assert.Empty(t, presence["room-1"])
+}
+
+func TestVoiceInviteSendAcrossInstancesExpiresIfRoomDeletedBeforePost(t *testing.T) {
+	first, kv := newVoiceRoomsPlugin()
+	second := secondVoicePlugin(first)
+	require.Equal(t, http.StatusOK, createVoiceRoom(first, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(first, "inviter", "room-1").Code)
+	gateway := &pausedInviteGateway{Plugin: first, pauseCreate: true, started: make(chan struct{}), resume: make(chan struct{})}
+	service := voiceInviteService{rooms: voiceRoomService{repo: first}, gateway: gateway}
+	result := make(chan error, 1)
+	go func() { result <- service.send("inviter", "guest", "room-1") }()
+	<-gateway.started
+	require.Equal(t, http.StatusOK, voiceRoomsRequest(second, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil).Code)
+	close(gateway.resume)
+
+	assert.ErrorIs(t, <-result, errVoiceInviteExpired)
+	require.Len(t, kv.posts, 1)
+	invite, err := voiceInviteFromPost(kv.posts["post-1"])
+	require.NoError(t, err)
+	assert.LessOrEqual(t, invite.ExpiresAt, model.GetMillis())
+	assert.NotContains(t, kv.webSocketEvents, voiceInviteEvent)
+}
+
+func TestVoiceInviteAcceptAcrossInstancesExpiresIfRoomDeletedBeforeUpdate(t *testing.T) {
+	first, kv := newVoiceRoomsPlugin()
+	second := secondVoicePlugin(first)
+	require.Equal(t, http.StatusOK, createVoiceRoom(first, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(first, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(first, "inviter", "guest", "room-1"))
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+	gateway := &pausedInviteGateway{Plugin: first, pauseUpdate: true, started: make(chan struct{}), resume: make(chan struct{})}
+	service := voiceInviteService{rooms: voiceRoomService{repo: first}, gateway: gateway}
+	result := make(chan error, 1)
+	go func() { result <- service.respond("guest", postID, inviteID, voiceInviteAccepted) }()
+	<-gateway.started
+	require.Equal(t, http.StatusOK, voiceRoomsRequest(second, http.MethodDelete, "/v1/voice/rooms?roomId=room-1", testAdmin, nil).Code)
+	close(gateway.resume)
+
+	assert.ErrorIs(t, <-result, errVoiceInviteExpired)
+	invite, err := voiceInviteFromPost(kv.posts[postID])
+	require.NoError(t, err)
+	assert.Equal(t, voiceInvitePending, invite.Status)
+	assert.LessOrEqual(t, invite.ExpiresAt, model.GetMillis())
+	assert.Equal(t, http.StatusGone, respondToVoiceInvite(second, "guest", postID, inviteID, voiceInviteAccepted))
+}
+
+func TestVoiceInviteSendAndAcceptAcrossInstances(t *testing.T) {
+	first, kv := newVoiceRoomsPlugin()
+	second := secondVoicePlugin(first)
+	require.Equal(t, http.StatusOK, createVoiceRoom(first, testAdmin, "room-1", "Standup").Code)
+	require.Equal(t, http.StatusOK, heartbeat(first, "inviter", "room-1").Code)
+	require.Equal(t, http.StatusNoContent, inviteToVoiceRoom(first, "inviter", "guest", "room-1"))
+	payload := kv.webSocketPayloads[len(kv.webSocketPayloads)-1]
+	postID := payload["postId"].(string)
+	inviteID := payload["inviteId"].(string)
+
+	status := respondToVoiceInvite(second, "guest", postID, inviteID, voiceInviteAccepted)
+
+	assert.Equal(t, http.StatusNoContent, status)
+	invite, err := voiceInviteFromPost(kv.posts[postID])
+	require.NoError(t, err)
+	assert.Equal(t, voiceInviteAccepted, invite.Status)
 }

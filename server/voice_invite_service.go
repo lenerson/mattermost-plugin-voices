@@ -69,6 +69,14 @@ func (s voiceInviteService) send(inviterID, targetID, roomID string) error {
 	if err != nil || post == nil {
 		return errVoiceInviteCreatePost
 	}
+	if err := s.rooms.validateInviteResponse(invite); err != nil {
+		if errors.Is(err, errVoiceInviteExpired) {
+			if updateErr := s.expireInvitePost(post, invite); updateErr != nil {
+				return updateErr
+			}
+		}
+		return err
+	}
 	payload := invite.asMap()
 	payload["postId"] = post.Id
 	s.gateway.invitePublish(payload, targetID)
@@ -103,6 +111,29 @@ func (s voiceInviteService) respond(userID, postID, inviteID, decision string) e
 		return err
 	}
 	invite.Status = decision
+	updated := post.Clone()
+	updated.Props = make(map[string]interface{}, len(post.Props))
+	for key, value := range post.Props {
+		updated.Props[key] = value
+	}
+	updated.Props[voiceInvitePropsKey] = invite.asMap()
+	if err := s.gateway.inviteUpdatePost(updated); err != nil {
+		return errVoiceInviteUpdatePost
+	}
+	if err := s.rooms.validateInviteResponse(invite); err != nil {
+		if errors.Is(err, errVoiceInviteExpired) {
+			if updateErr := s.expireInvitePost(updated, invite); updateErr != nil {
+				return updateErr
+			}
+		}
+		return err
+	}
+	return nil
+}
+
+func (s voiceInviteService) expireInvitePost(post *model.Post, invite voiceInviteRecord) error {
+	invite.Status = voiceInvitePending
+	invite.ExpiresAt = model.GetMillis() - 1
 	updated := post.Clone()
 	updated.Props = make(map[string]interface{}, len(post.Props))
 	for key, value := range post.Props {
